@@ -1,0 +1,2 @@
+-keep class com.appnova.novatube.config.** { *; }
+-keep class com.appnova.novatube.sponsorblock.** { *; }
