@@ -46,6 +46,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Settings
@@ -54,6 +55,8 @@ import androidx.compose.material.icons.rounded.Speed
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -86,6 +89,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import com.appnova.novatube.R
 import com.appnova.novatube.adblock.BraveShieldsEngine
+import com.appnova.novatube.config.NovaChannel
 import com.appnova.novatube.config.NovaConfig
 import com.appnova.novatube.config.PlaybackConfig
 import com.appnova.novatube.config.SkipMode
@@ -139,6 +143,16 @@ private fun isGoogleOrYouTubeAuthOrContentHost(host: String): Boolean {
 private fun isYouTubeHost(url: String?): Boolean {
     val lower = url?.lowercase().orEmpty()
     return lower.contains("youtube.com") || lower.contains("youtu.be")
+}
+
+private fun isAnichinDomain(host: String): Boolean {
+    val h = host.lowercase()
+    return h == "anichin.moe" || h.endsWith(".anichin.moe")
+}
+
+private fun isAnichinHost(url: String?): Boolean {
+    val lower = url?.lowercase().orEmpty()
+    return lower.contains("anichin.moe")
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -235,7 +249,7 @@ fun YouTubeCloneScreen(
         }
     }
 
-    // Re-apply CSS / playback settings whenever config changes (only on YouTube pages)
+    // Re-apply CSS / playback settings whenever config changes (only on supported channel pages)
     LaunchedEffect(config, webViewRef) {
         val wv = webViewRef ?: return@LaunchedEffect
         wv.allowBackgroundPlay = config.playback.backgroundPlayEnabled
@@ -243,7 +257,29 @@ fun YouTubeCloneScreen(
         activeLoop = config.playback.loopByDefault
         if (isYouTubeHost(wv.url)) {
             injectNovaEnhancements(wv, config, activeSpeed, activeLoop)
+        } else if (isAnichinHost(wv.url)) {
+            injectAnichinEnhancements(wv, config)
         }
+    }
+
+    val activeChannel = config.ui.activeChannel
+    fun switchChannel(target: NovaChannel) {
+        lastInteractionUptimeMs = SystemClock.uptimeMillis()
+        if (activeChannel == target && webViewRef?.url?.contains(
+                if (target == NovaChannel.YOUTUBE) "youtube.com" else "anichin.moe"
+            ) == true
+        ) {
+            return
+        }
+        onUpdateUi { it.copy(activeChannel = target) }
+        currentVideoId = ""
+        isWatchPage = false
+        isVideoPlaying = false
+        sponsorSegments = emptyList()
+        activeManualSegment = null
+        onVideoPlayingStateChanged(false)
+        webViewRef?.loadUrl(target.homeUrl)
+        hudText = "Channel: ${target.displayName}"
     }
 
     // Keep foreground media service alive when background playback is enabled
@@ -372,13 +408,16 @@ fun YouTubeCloneScreen(
                             view: WebView,
                             request: WebResourceRequest
                         ): Boolean {
-                            // Never hijack iframe / sub-frame loads (fixes Google login & embedded auth frames)
+                            // Never hijack iframe / sub-frame loads (fixes Google login & embedded players)
                             if (!request.isForMainFrame) return false
                             val scheme = request.url.scheme?.lowercase().orEmpty()
                             if (scheme != "http" && scheme != "https") return true
 
                             val host = request.url.host?.lowercase().orEmpty()
-                            return if (isGoogleOrYouTubeAuthOrContentHost(host)) {
+                            if (config.ui.adBlockEnabled && BraveShieldsEngine.isBlockedHost(host)) {
+                                return true
+                            }
+                            return if (isGoogleOrYouTubeAuthOrContentHost(host) || isAnichinDomain(host)) {
                                 false
                             } else {
                                 runCatching {
@@ -392,6 +431,8 @@ fun YouTubeCloneScreen(
                             super.onPageStarted(view, url, favicon)
                             if (isYouTubeHost(url)) {
                                 injectNovaEnhancements(view, config, activeSpeed, activeLoop)
+                            } else if (isAnichinHost(url)) {
+                                injectAnichinEnhancements(view, config)
                             }
                         }
 
@@ -399,6 +440,9 @@ fun YouTubeCloneScreen(
                             super.onPageFinished(view, url)
                             if (isYouTubeHost(url)) {
                                 injectNovaEnhancements(view, config, activeSpeed, activeLoop)
+                                fixViewportAlignment(view)
+                            } else if (isAnichinHost(url)) {
+                                injectAnichinEnhancements(view, config)
                                 fixViewportAlignment(view)
                             }
                         }
@@ -425,7 +469,7 @@ fun YouTubeCloneScreen(
                         }
                     }
 
-                    loadUrl("https://m.youtube.com")
+                    loadUrl(config.ui.activeChannel.homeUrl)
                     webViewRef = this
                 }
             },
@@ -559,6 +603,37 @@ fun YouTubeCloneScreen(
                         }
                     }
 
+                    // Quick Channel Switcher (YouTube <-> Anichin)
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(16.dp))
+                            .background(Color.White.copy(alpha = 0.08f))
+                            .clickable {
+                                val nextChannel = if (activeChannel == NovaChannel.YOUTUBE) {
+                                    NovaChannel.ANICHIN
+                                } else {
+                                    NovaChannel.YOUTUBE
+                                }
+                                switchChannel(nextChannel)
+                            }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Rounded.LiveTv,
+                            contentDescription = "Switch Channel",
+                            tint = if (activeChannel == NovaChannel.ANICHIN) NovaColors.AccentCyan else NovaColors.AccentRed,
+                            modifier = Modifier.size(15.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text(
+                            text = activeChannel.shortLabel,
+                            color = Color.White,
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+
                     // NovaTube Logo Settings Button
                     IconButton(
                         onClick = {
@@ -674,6 +749,50 @@ fun YouTubeCloneScreen(
                         Icon(Icons.Rounded.Close, contentDescription = "Close", tint = NovaColors.TextSecondary)
                     }
                 }
+                // Channel Switcher Bar inside Nova Menu
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Text(
+                        text = "Channel:",
+                        color = NovaColors.TextSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    NovaChannel.entries.forEach { channel ->
+                        val selected = activeChannel == channel
+                        FilterChip(
+                            selected = selected,
+                            onClick = {
+                                switchChannel(channel)
+                                showSettingsSheet = false
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    Icons.Rounded.LiveTv,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(15.dp)
+                                )
+                            },
+                            label = {
+                                Text(
+                                    text = channel.displayName,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold
+                                )
+                            },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = NovaColors.AccentCyan.copy(alpha = 0.22f),
+                                selectedLabelColor = Color.White,
+                                selectedLeadingIconColor = NovaColors.AccentCyan
+                            )
+                        )
+                    }
+                }
                 SettingsTab(
                     config = config,
                     onUpdatePlayback = onUpdatePlayback,
@@ -710,7 +829,7 @@ private fun fixViewportAlignment(webView: WebView) {
     webView.requestLayout()
     val resetJs = """
         (function() {
-            if (!location.hostname.includes('youtube.com')) return;
+            if (!location.hostname.includes('youtube.com') && !location.hostname.includes('anichin.moe')) return;
             const applyFix = () => {
                 let vp = document.querySelector('meta[name="viewport"]');
                 if (!vp) {
@@ -877,6 +996,69 @@ private fun injectNovaEnhancements(
                         }
                     }
                 }, 250);
+            }
+        })();
+    """.trimIndent()
+
+    webView.evaluateJavascript(js, null)
+}
+
+/**
+ * Injects AdBlock, popup blocking, background playback unlock, and viewport lock
+ * when the user switches to the Anichin channel (https://anichin.moe/).
+ */
+private fun injectAnichinEnhancements(
+    webView: WebView,
+    config: NovaConfig
+) {
+    val adCss = if (config.ui.adBlockEnabled) {
+        """
+        .ads, .ad-banner, .banner-ads, .iklan, .float-ads, .floating-ads,
+        [class*="iklan"], [id*="iklan"], [class*="ad-slot"], [id*="ad-slot"],
+        iframe[src*="doubleclick"], iframe[src*="googlesyndication"],
+        iframe[src*="popads"], iframe[src*="adsterra"] {
+            display: none !important;
+        }
+        """.trimIndent()
+    } else ""
+
+    val viewportCss = """
+        html, body {
+            overflow-x: hidden !important;
+            max-width: 100vw !important;
+        }
+    """.trimIndent()
+
+    val combinedCss = (viewportCss + "\n" + adCss)
+        .replace("\n", " ")
+        .replace("\"", "\\\"")
+
+    val js = """
+        (function() {
+            if (!location.hostname.includes('anichin.moe')) return;
+
+            let style = document.getElementById('novatube-anichin-style');
+            if (!style) {
+                style = document.createElement('style');
+                style.id = 'novatube-anichin-style';
+                document.head && document.head.appendChild(style);
+            }
+            if (style) {
+                style.textContent = "$combinedCss";
+            }
+
+            if (${config.ui.adBlockEnabled} && !window.__novaPopupBlocked) {
+                window.__novaPopupBlocked = true;
+                window.open = function() { return null; };
+            }
+
+            if (${config.playback.backgroundPlayEnabled} && !window.__novaBgHooked) {
+                window.__novaBgHooked = true;
+                try {
+                    Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+                    Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+                    window.addEventListener('visibilitychange', e => e.stopImmediatePropagation(), true);
+                } catch (e) {}
             }
         })();
     """.trimIndent()

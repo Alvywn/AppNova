@@ -1,96 +1,90 @@
 # NovaTube
 
-> **Status: Active Development (Work in Progress)**
-> NovaTube is currently under active development. Features, internal APIs, and UI components are continuously evolving, and occasional bugs or breaking changes may occur between builds.
+> **Note:** Hi! This app is still under development (work in progress). Some features might still change or have small bugs while I keep working on it.
 
-**NovaTube** (`com.appnova.novatube`) is a standalone, non-root Android YouTube client designed to deliver a fast, ad-free, and customizable viewing experience without requiring Magisk, LSPosed, or system-level modifications.
+**NovaTube** (`com.appnova.novatube`) is a simple Android app I made for watching videos without ads and without needing root, Magisk, or LSPosed.
 
-Built with **Kotlin** and **Jetpack Compose**, NovaTube wraps YouTube's mobile web experience (`m.youtube.com`) inside a custom-hooked `WebView` (`NovaYouTubeWebView`) paired with a foreground Media3 service, a **Brave Shields-inspired 3-layer ad-blocking engine**, **SponsorBlock** integration, and a floating **Liquid Glass** control HUD.
-
----
-
-## Key Features
-
-### 1. Brave Shields-Inspired 3-Layer AdBlock (`BraveShieldsEngine`)
-- **Network-Level Request Filtering**: Intercepts and drops requests to known ad/tracking domains (`doubleclick.net`, `googlesyndication.com`, `googleadservices.com`, `imasdk.googleapis.com`, etc.) and YouTube ad endpoints (`/pagead/`, `/api/stats/ads`, `/get_midroll_info`, `/youtubei/v1/player/ad_break`) before they are downloaded.
-- **JSON-Prune Scriptlet**: Hooks `JSON.parse`, `Response.prototype.json`, and `window.ytInitialPlayerResponse` to strip `adPlacements`, `playerAds`, `adSlots`, and `adBreakHeartbeatParams` before the player can schedule pre-roll or mid-roll ads.
-- **Cosmetic DOM Filtering & Fallback Skipper**: Hides promoted feed cards, companion ads, and banner overlays via injected CSS, with an automated fallback skipper for any residual player ads.
-
-### 2. SponsorBlock Integration
-- Queries the official SponsorBlock API (`https://sponsor.ajay.app/api/skipSegments`) for the active video.
-- Supports configurable categories and three skip modes:
-  - **Auto Skip**: Automatically seeks past sponsored segments with optional HUD toast notifications.
-  - **Manual Skip Pill**: Displays a floating skip button when inside a segment.
-  - **Markers Only**: Tracks segments without interrupting playback.
-
-### 3. Enhanced Playback & Background Support
-- **Background Playback**: Overrides `onWindowVisibilityChanged` and `visibilitychange` events and maintains a Media3 foreground service (`NovaPlaybackService`) so audio continues playing when the screen is off or when switching apps.
-- **Picture-in-Picture (PiP)**: Supports automatic PiP on leaving the app (`onUserLeaveHint`) as well as a quick PiP trigger in the floating control pill.
-- **Quick Controls**: Cycle playback speeds (`0.75x` – `3.0x`) and toggle video looping directly from the auto-hiding floating pill.
-
-### 4. UI Customization & Native Google Sign-In
-- **OLED Pure Black Mode**: Forces `#000000` surfaces across YouTube feeds and app shells.
-- **Liquid Glass HUD**: Translucent auto-hiding floating control pill and toast notifications.
-- **Feed Cleanup**: Option to hide Shorts shelves and promotional clutter.
-- **Account Support**: Allows full Google OAuth sign-in directly inside the app without hijacking auth sub-frames or triggering unintended feed redirects.
+It opens YouTube (`m.youtube.com`) and Anichin (`anichin.moe`) inside a custom Android `WebView` (`NovaYouTubeWebView`), and adds extra features on top like ad blocking, SponsorBlock, background play, and a dark OLED theme.
 
 ---
 
-## Tech Stack
+## What Can This App Do?
 
-- **Language**: Kotlin `2.0.21` (Java 17 target)
-- **UI**: Jetpack Compose (Material 3, Compose BOM `2024.10.01`)
-- **Media & Background**: AndroidX Media3 (`1.5.0`)
-- **Serialization**: `kotlinx.serialization` (`1.7.3`)
-- **SDK Targets**: `minSdk = 26` (Android 8.0), `targetSdk = 35`, `compileSdk = 36`
-- **Build System**: Android Gradle Plugin `8.7.3`
+### 1. Switch Channels (YouTube & Anichin)
+- You can switch between **YouTube** (`https://m.youtube.com`) and **Anichin** (`https://anichin.moe/`) right inside the app.
+- There is a quick channel button (`YT` / `Anichin`) on the floating Nova bar, and also a **Channel** picker inside **NovaTube Settings**.
+
+### 2. AdBlock (Like Brave Browser) (`BraveShieldsEngine`)
+- **Blocks ad links**: Stops known ad and tracker websites (`doubleclick.net`, `googlesyndication.com`, `popads.net`, `adsterra.com`, etc.) before they load.
+- **Removes YouTube ad data**: Cleans up `adPlacements`, `playerAds`, `adSlots`, and `adBreakHeartbeatParams` from `JSON.parse`, `Response.prototype.json`, and `window.ytInitialPlayerResponse`.
+- **Hides ad boxes & popups**: Hides ad cards on the page, blocks annoying `window.open` popups on Anichin, and auto-skips video ads if any show up.
+
+### 3. SponsorBlock
+- Connects to the SponsorBlock API (`https://sponsor.ajay.app/api/skipSegments`).
+- Can **Auto Skip** sponsor parts in videos, show a **Manual Skip** button, or just track them.
+
+### 4. Background Play & Picture-in-Picture (PiP)
+- **Background Play**: Keeps the audio playing even when you turn off the screen or switch to another app (using `NovaPlaybackService`).
+- **PiP Mode**: Shrinks the video into a small floating window when you leave the app.
+- **Quick Player Controls**: Change video speed (`0.75x` to `3.0x`) and turn **Loop** on or off from the floating bar.
+
+### 5. Clean UI & Google Login
+- **OLED Black Mode**: Makes the background pure black (`#000000`) to look nice and save battery on OLED screens.
+- **Hide Shorts**: Option to hide the Shorts shelf if you don't want to see it.
+- **Google Sign-In**: You can log in to your Google account directly inside the app.
 
 ---
 
-## Project Structure
+## What I Used to Build It
+
+- **Language**: Kotlin (`2.0.21`)
+- **UI**: Jetpack Compose (Material 3)
+- **Media Service**: AndroidX Media3 (`1.5.0`)
+- **JSON**: `kotlinx.serialization` (`1.7.3`)
+- **Android SDK**: `minSdk = 26` (Android 8.0+), `targetSdk = 35`, `compileSdk = 36`
+
+---
+
+## Folder Structure
 
 ```text
 app/src/main/java/com/appnova/novatube/
 ├── adblock/
-│   └── BraveShieldsEngine.kt       # 3-layer network, JSON-prune & cosmetic ad blocker
+│   └── BraveShieldsEngine.kt       # Blocks ad URLs, cleans ad JSON, and hides ad boxes
 ├── config/
-│   ├── NovaConfig.kt               # Immutable app, playback, SponsorBlock & UI config models
-│   └── NovaConfigRepository.kt     # Persistent configuration storage
+│   ├── NovaConfig.kt               # App settings & channel list (YouTube / Anichin)
+│   └── NovaConfigRepository.kt     # Saves settings on the phone
 ├── player/
-│   ├── NovaPlaybackService.kt      # Media3 foreground service for background audio
-│   └── NovaPlayerHolder.kt         # Shared player state holder
+│   ├── NovaPlaybackService.kt      # Keeps audio playing in the background
+│   └── NovaPlayerHolder.kt         # Shared player helper
 ├── sponsorblock/
-│   ├── SponsorBlockClient.kt       # SponsorBlock API client
-│   └── SponsorSegment.kt           # Segment & category models
+│   ├── SponsorBlockClient.kt       # Talks to SponsorBlock API
+│   └── SponsorSegment.kt           # Sponsor segment data
 └── ui/
-    ├── MainActivity.kt             # Entry point & PiP lifecycle handling
-    ├── NovaViewModel.kt            # State management & SponsorBlock coordination
-    ├── components/                 # Reusable Glass UI components
+    ├── MainActivity.kt             # Main app entry & PiP handler
+    ├── NovaViewModel.kt            # Holds app state and settings
+    ├── components/                 # Glass UI cards and toggles
     └── screens/
-        ├── YouTubeCloneScreen.kt   # Core hooked WebView, fullscreen & floating HUD
-        ├── SettingsTab.kt          # Settings sheet container
-        ├── PlaybackTab.kt          # Speed, loop, PiP & background play settings
-        ├── SponsorBlockTab.kt      # SponsorBlock categories & skip mode settings
-        └── UiCustomizationTab.kt   # AdBlock, OLED, Liquid Glass & cleanup toggles
+        ├── YouTubeCloneScreen.kt   # WebView screen, channel switcher & floating menu
+        ├── SettingsTab.kt          # Settings popup page
+        ├── PlaybackTab.kt          # Speed, loop, PiP & background play options
+        ├── SponsorBlockTab.kt      # SponsorBlock options
+        └── UiCustomizationTab.kt   # AdBlock, OLED & UI cleanup options
 ```
 
 ---
 
-## Building from Source
+## How to Build the APK Yourself
 
-### Prerequisites
-- **Android Studio** (Ladybug or newer recommended) or **JDK 17**
-- **Android SDK** with Platform `36` installed
+You need **Android Studio** (or **JDK 17**) and **Android SDK 36**.
 
-### Build Commands
-
-1. **Clone the repository**
+1. **Download this project**
    ```bash
    git clone https://github.com/<your-username>/<your-repo-name>.git
    cd AppNova
    ```
 
-2. **Run unit tests**
+2. **Run tests**
    - Windows:
      ```powershell
      .\gradlew.bat testDebugUnitTest
@@ -100,7 +94,7 @@ app/src/main/java/com/appnova/novatube/
      ./gradlew testDebugUnitTest
      ```
 
-3. **Build Debug APK**
+3. **Build the Debug APK**
    - Windows:
      ```powershell
      .\gradlew.bat assembleDebug
@@ -110,21 +104,19 @@ app/src/main/java/com/appnova/novatube/
      ./gradlew assembleDebug
      ```
 
-   The generated APK will be located at:
+   After it finishes, your APK file will be here:
    `app/build/outputs/apk/debug/app-debug.apk`
 
 ---
 
-## Roadmap & Development Notes
+## Things I Want to Improve Later
 
-As this project is still in **active development**, planned improvements include:
-- Additional cosmetic filter updates as YouTube's mobile web DOM evolves.
-- Expanded unit and instrumentation test coverage.
-- Release signing configuration and automated CI builds.
-- Further refinements to gesture controls and custom tab management.
+- Make the ad-block filters even better as websites change.
+- Add more unit tests.
+- Add a release signing setup for GitHub Releases.
 
 ---
 
 ## Disclaimer
 
-NovaTube is an independent open-source project created for educational and personal use. It is **not affiliated with, endorsed by, or associated with Google LLC or YouTube**. All trademarks, service marks, and brand names belong to their respective owners.
+This project is made for learning and personal use only. It is **not** an official app from Google, YouTube, or Anichin.

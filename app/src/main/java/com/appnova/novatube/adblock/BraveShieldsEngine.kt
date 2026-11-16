@@ -29,7 +29,20 @@ object BraveShieldsEngine {
         "pagead2.googlesyndication.com",
         "tpc.googlesyndication.com",
         "s0.2mdn.net",
-        "static.doubleclick.net"
+        "static.doubleclick.net",
+        "popads.net",
+        "popcash.net",
+        "propellerads.com",
+        "adsterra.com",
+        "highperformanceformat.com",
+        "effectivegatecpm.com",
+        "onclickalgo.com",
+        "exoclick.com",
+        "realsrv.com",
+        "trafficjunky.net",
+        "mgid.com",
+        "histats.com",
+        "yandex.ru"
     )
 
     private val blockedYouTubePatterns = listOf(
@@ -44,12 +57,17 @@ object BraveShieldsEngine {
         "?adformat="
     )
 
+    fun isBlockedHost(host: String): Boolean {
+        val h = host.lowercase()
+        return blockedDomains.any { h == it || h.endsWith(".$it") || h.contains(it) }
+    }
+
     fun shouldBlockRequest(request: WebResourceRequest): Boolean {
         if (request.isForMainFrame) return false
         val url = request.url.toString().lowercase()
         val host = request.url.host?.lowercase().orEmpty()
 
-        if (blockedDomains.any { host == it || host.endsWith(".$it") || host.contains(it) }) {
+        if (isBlockedHost(host)) {
             return true
         }
         if ((host.contains("youtube.com") || host.contains("googlevideo.com")) &&

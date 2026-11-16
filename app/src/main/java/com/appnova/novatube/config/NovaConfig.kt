@@ -5,6 +5,12 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
 @Serializable
+enum class NovaChannel(val displayName: String, val shortLabel: String, val homeUrl: String) {
+    YOUTUBE("YouTube", "YT", "https://m.youtube.com"),
+    ANICHIN("Anichin", "Anichin", "https://anichin.moe/")
+}
+
+@Serializable
 enum class SkipMode(val label: String) {
     AUTO_SKIP("Auto Skip"),
     MANUAL_BUTTON("Manual Skip Pill"),
@@ -79,6 +85,7 @@ data class YouTubeTabConfig(
 
 @Serializable
 data class UiConfig(
+    val activeChannel: NovaChannel = NovaChannel.YOUTUBE,
     val adBlockEnabled: Boolean = true,
     val oledModeEnabled: Boolean = true,
     val liquidGlassHudEnabled: Boolean = true,
