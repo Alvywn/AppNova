@@ -8,6 +8,15 @@ It opens YouTube (`m.youtube.com`) and Anichin (`anichin.moe`) inside a custom A
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="screenshots/01_youtube_home.png" width="260" alt="NovaTube YouTube Channel" />
+  <img src="screenshots/02_anichin_channel.png" width="260" alt="NovaTube Anichin Channel" />
+</p>
+
+---
+
 ## What Can This App Do?
 
 ### 1. Switch Channels (YouTube & Anichin)
@@ -17,7 +26,7 @@ It opens YouTube (`m.youtube.com`) and Anichin (`anichin.moe`) inside a custom A
 ### 2. AdBlock (Like Brave Browser) (`BraveShieldsEngine`)
 - **Blocks ad links**: Stops known ad and tracker websites (`doubleclick.net`, `googlesyndication.com`, `popads.net`, `adsterra.com`, etc.) before they load.
 - **Removes YouTube ad data**: Cleans up `adPlacements`, `playerAds`, `adSlots`, and `adBreakHeartbeatParams` from `JSON.parse`, `Response.prototype.json`, and `window.ytInitialPlayerResponse`.
-- **Hides ad boxes & popups**: Hides ad cards on the page, blocks annoying `window.open` popups on Anichin, and auto-skips video ads if any show up.
+- **Hides ad boxes & blocks new-tab popups**: Hides ad cards on the page, blocks annoying `window.open` popups and external tap redirects on Anichin (so touching the page won't kick you to a new browser tab), and auto-skips video ads if any show up.
 
 ### 3. SponsorBlock
 - Connects to the SponsorBlock API (`https://sponsor.ajay.app/api/skipSegments`).
@@ -30,6 +39,7 @@ It opens YouTube (`m.youtube.com`) and Anichin (`anichin.moe`) inside a custom A
 
 ### 5. Clean UI & Google Login
 - **OLED Black Mode**: Makes the background pure black (`#000000`) to look nice and save battery on OLED screens.
+- **Clean Screen Alignment**: Fits nicely below the phone's status bar and keeps the page aligned when exiting fullscreen video.
 - **Hide Shorts**: Option to hide the Shorts shelf if you don't want to see it.
 - **Google Sign-In**: You can log in to your Google account directly inside the app.
 
@@ -80,7 +90,7 @@ You need **Android Studio** (or **JDK 17**) and **Android SDK 36**.
 
 1. **Download this project**
    ```bash
-   git clone https://github.com/<your-username>/<your-repo-name>.git
+   git clone https://github.com/Alvywn/AppNova.git
    cd AppNova
    ```
 

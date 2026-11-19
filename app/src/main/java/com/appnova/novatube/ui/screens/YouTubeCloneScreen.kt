@@ -126,6 +126,14 @@ class NovaYouTubeWebView(context: Context) : WebView(context) {
         }
         return super.dispatchTouchEvent(ev)
     }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (w > 0 && h > 0 && (w != oldw || h != oldh)) {
+            if (scrollX != 0) scrollTo(0, scrollY)
+            post { fixViewportAlignment(this) }
+        }
+    }
 }
 
 private fun isGoogleOrYouTubeAuthOrContentHost(host: String): Boolean {
@@ -221,12 +229,10 @@ fun YouTubeCloneScreen(
         if (activity != null) {
             val controller = WindowCompat.getInsetsController(activity.window, activity.window.decorView)
             if (isLandscape || customFullscreenView != null) {
-                WindowCompat.setDecorFitsSystemWindows(activity.window, false)
                 controller.hide(WindowInsetsCompat.Type.systemBars())
                 controller.systemBarsBehavior =
                     WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             } else {
-                WindowCompat.setDecorFitsSystemWindows(activity.window, true)
                 controller.show(WindowInsetsCompat.Type.systemBars())
             }
         }
@@ -330,6 +336,7 @@ fun YouTubeCloneScreen(
                         builtInZoomControls = false
                         displayZoomControls = false
                         setSupportMultipleWindows(false)
+                        javaScriptCanOpenWindowsAutomatically = false
                         userAgentString =
                             "Mozilla/5.0 (Linux; Android 14; Pixel 8 Pro) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.88 Mobile Safari/537.36"
                     }
@@ -417,6 +424,12 @@ fun YouTubeCloneScreen(
                             if (config.ui.adBlockEnabled && BraveShieldsEngine.isBlockedHost(host)) {
                                 return true
                             }
+
+                            // When on Anichin, bypass & block any external popunder/new-tab redirects
+                            if (activeChannel == NovaChannel.ANICHIN || isAnichinHost(view.url)) {
+                                return !isAnichinDomain(host)
+                            }
+
                             return if (isGoogleOrYouTubeAuthOrContentHost(host) || isAnichinDomain(host)) {
                                 false
                             } else {
@@ -473,7 +486,10 @@ fun YouTubeCloneScreen(
                     webViewRef = this
                 }
             },
-            modifier = Modifier.fillMaxSize()
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
         )
 
         // Fullscreen Video Container when YouTube's fullscreen button is tapped
@@ -826,6 +842,9 @@ private fun extractIdFromUrl(url: String): String? {
  * so minimizing a video, exiting fullscreen, or navigating back never shifts the layout.
  */
 private fun fixViewportAlignment(webView: WebView) {
+    if (webView.scrollX != 0) {
+        webView.scrollTo(0, webView.scrollY)
+    }
     webView.requestLayout()
     val resetJs = """
         (function() {
@@ -840,10 +859,12 @@ private fun fixViewportAlignment(webView: WebView) {
                 vp.content = 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no';
                 document.documentElement.style.overflowX = 'hidden';
                 document.documentElement.style.maxWidth = '100vw';
+                document.documentElement.scrollLeft = 0;
                 if (document.body) {
                     document.body.style.overflowX = 'hidden';
                     document.body.style.maxWidth = '100vw';
                     document.body.style.margin = '0';
+                    document.body.scrollLeft = 0;
                 }
                 if (window.scrollX !== 0) {
                     window.scrollTo(0, window.scrollY);
@@ -1050,6 +1071,28 @@ private fun injectAnichinEnhancements(
             if (${config.ui.adBlockEnabled} && !window.__novaPopupBlocked) {
                 window.__novaPopupBlocked = true;
                 window.open = function() { return null; };
+
+                const origAnchorClick = HTMLAnchorElement.prototype.click;
+                HTMLAnchorElement.prototype.click = function() {
+                    try {
+                        if (this.hostname && !this.hostname.includes('anichin.moe')) {
+                            return;
+                        }
+                    } catch (e) {}
+                    return origAnchorClick.apply(this, arguments);
+                };
+
+                document.addEventListener('click', function(e) {
+                    const a = e.target && e.target.closest ? e.target.closest('a') : null;
+                    if (a && a.hostname && !a.hostname.includes('anichin.moe')) {
+                        e.preventDefault();
+                        e.stopImmediatePropagation();
+                        return false;
+                    }
+                    if (a && a.target === '_blank') {
+                        a.removeAttribute('target');
+                    }
+                }, true);
             }
 
             if (${config.playback.backgroundPlayEnabled} && !window.__novaBgHooked) {
