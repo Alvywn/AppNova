@@ -11,6 +11,57 @@ enum class NovaChannel(val displayName: String, val shortLabel: String, val home
 }
 
 @Serializable
+enum class NovaThemeStyle(
+    val displayName: String,
+    val surfaceHex: Long,
+    val cardHex: Long,
+    val accentHex: Long,
+    val borderHex: Long,
+    val webBgHex: String
+) {
+    LIQUID_GLASS(
+        displayName = "Liquid Glass",
+        surfaceHex = 0xFF070B14,
+        cardHex = 0xCC121A2E,
+        accentHex = 0xFF67E8F9,
+        borderHex = 0x6667E8F9,
+        webBgHex = "#070B14"
+    ),
+    OLED_BLACK(
+        displayName = "OLED Black",
+        surfaceHex = 0xFF000000,
+        cardHex = 0xEB0C0C0E,
+        accentHex = 0xFFFF1744,
+        borderHex = 0x33FFFFFF,
+        webBgHex = "#000000"
+    ),
+    CYBER_NEON(
+        displayName = "Cyber Neon",
+        surfaceHex = 0xFF090614,
+        cardHex = 0xD9160E2C,
+        accentHex = 0xFFE879F9,
+        borderHex = 0x6622D3EE,
+        webBgHex = "#090614"
+    ),
+    CRIMSON_DARK(
+        displayName = "Crimson Dark",
+        surfaceHex = 0xFF0F0F0F,
+        cardHex = 0xEB1A1214,
+        accentHex = 0xFFFF3D57,
+        borderHex = 0x55FF3D57,
+        webBgHex = "#0F0F0F"
+    ),
+    SAKURA_NIGHT(
+        displayName = "Sakura Night",
+        surfaceHex = 0xFF120A10,
+        cardHex = 0xD920111C,
+        accentHex = 0xFFF472B6,
+        borderHex = 0x55F472B6,
+        webBgHex = "#120A10"
+    )
+}
+
+@Serializable
 enum class SkipMode(val label: String) {
     AUTO_SKIP("Auto Skip"),
     MANUAL_BUTTON("Manual Skip Pill"),
@@ -86,6 +137,7 @@ data class YouTubeTabConfig(
 @Serializable
 data class UiConfig(
     val activeChannel: NovaChannel = NovaChannel.YOUTUBE,
+    val themeStyle: NovaThemeStyle = NovaThemeStyle.LIQUID_GLASS,
     val adBlockEnabled: Boolean = true,
     val oledModeEnabled: Boolean = true,
     val liquidGlassHudEnabled: Boolean = true,

@@ -28,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.appnova.novatube.ui.theme.LocalNovaThemeStyle
 import com.appnova.novatube.ui.theme.NovaColors
 
 @Composable
@@ -35,16 +36,19 @@ fun GlassCard(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val theme = LocalNovaThemeStyle.current
+    val cardColor = Color(theme.cardHex)
+    val borderColor = Color(theme.borderHex)
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(22.dp),
-        color = NovaColors.GlassSurface,
+        color = cardColor,
         border = BorderStroke(
             1.dp,
             Brush.linearGradient(
                 listOf(
-                    Color.White.copy(alpha = 0.24f),
-                    Color.White.copy(alpha = 0.06f)
+                    borderColor,
+                    borderColor.copy(alpha = 0.25f)
                 )
             )
         )

@@ -26,7 +26,7 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             val config by novaViewModel.config.collectAsState()
-            NovaTubeTheme {
+            NovaTubeTheme(themeStyle = config.ui.themeStyle) {
                 YouTubeCloneScreen(
                     config = config,
                     isInPipMode = inPipMode,

@@ -38,6 +38,7 @@ import com.appnova.novatube.config.SkipMode
 import com.appnova.novatube.config.SponsorBlockConfig
 import com.appnova.novatube.config.SponsorCategory
 import com.appnova.novatube.config.UiConfig
+import com.appnova.novatube.ui.theme.LocalNovaThemeStyle
 import com.appnova.novatube.ui.theme.NovaColors
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -55,7 +56,11 @@ fun SettingsTab(
 ) {
     var settingsSection by remember { mutableIntStateOf(0) }
     var filterQuery by remember { mutableStateOf("") }
-    val sections = listOf("Playback", "SponsorBlock", "UI & Tabs")
+    val sections = listOf("Playback", "SponsorBlock", "Themes", "UI & Tabs", "Updates")
+    val activeTheme = LocalNovaThemeStyle.current
+    val accentColor = Color(activeTheme.accentHex)
+    val cardColor = Color(activeTheme.cardHex)
+    val borderColor = Color(activeTheme.borderHex)
 
     Column(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -81,10 +86,10 @@ fun SettingsTab(
                 singleLine = true,
                 shape = RoundedCornerShape(16.dp),
                 colors = OutlinedTextFieldDefaults.colors(
-                    focusedBorderColor = NovaColors.AccentRed,
-                    unfocusedBorderColor = NovaColors.GlassBorder,
-                    focusedContainerColor = NovaColors.GlassSurface,
-                    unfocusedContainerColor = NovaColors.GlassSurface,
+                    focusedBorderColor = accentColor,
+                    unfocusedBorderColor = borderColor,
+                    focusedContainerColor = cardColor,
+                    unfocusedContainerColor = cardColor,
                     focusedTextColor = NovaColors.TextPrimary,
                     unfocusedTextColor = NovaColors.TextPrimary
                 ),
@@ -98,7 +103,7 @@ fun SettingsTab(
                         onClick = { settingsSection = idx },
                         label = { Text(label) },
                         colors = FilterChipDefaults.filterChipColors(
-                            selectedContainerColor = NovaColors.AccentRed.copy(alpha = 0.25f),
+                            selectedContainerColor = accentColor.copy(alpha = 0.25f),
                             selectedLabelColor = Color.White
                         )
                     )
@@ -124,13 +129,19 @@ fun SettingsTab(
                         onToggleCategory = onToggleSponsorCategory,
                         onSetSkipMode = onSetSkipMode
                     )
-                    else -> UiCustomizationTab(
+                    2 -> ThemesTab(
+                        ui = config.ui,
+                        searchQuery = filterQuery,
+                        onUpdate = onUpdateUi
+                    )
+                    3 -> UiCustomizationTab(
                         ui = config.ui,
                         searchQuery = filterQuery,
                         onUpdate = onUpdateUi,
                         onToggleTabVisibility = onToggleTabVisibility,
                         onMoveTab = onMoveTab
                     )
+                    else -> UpdateTab()
                 }
                 Spacer(modifier = Modifier.height(14.dp))
                 OutlinedButton(

@@ -22,14 +22,20 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -38,6 +44,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -45,6 +52,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Bookmarks
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.LiveTv
 import androidx.compose.material.icons.rounded.PictureInPictureAlt
@@ -52,6 +60,9 @@ import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material.icons.rounded.SystemUpdate
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -62,35 +73,46 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.appnova.novatube.BuildConfig
 import com.appnova.novatube.R
 import com.appnova.novatube.adblock.BraveShieldsEngine
+import com.appnova.novatube.anichin.AnichinLibraryRepository
+import com.appnova.novatube.anichin.AnichinUpdateChecker
 import com.appnova.novatube.config.NovaChannel
 import com.appnova.novatube.config.NovaConfig
+import com.appnova.novatube.config.NovaThemeStyle
 import com.appnova.novatube.config.PlaybackConfig
 import com.appnova.novatube.config.SkipMode
 import com.appnova.novatube.config.SponsorBlockConfig
@@ -99,7 +121,11 @@ import com.appnova.novatube.config.UiConfig
 import com.appnova.novatube.player.NovaPlaybackService
 import com.appnova.novatube.sponsorblock.SponsorSegment
 import com.appnova.novatube.ui.theme.NovaColors
+import com.appnova.novatube.updater.GitHubUpdater
+import com.appnova.novatube.updater.UpdateInfo
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /**
  * Custom WebView that:
@@ -196,6 +222,36 @@ fun YouTubeCloneScreen(
     var activeManualSegment by remember { mutableStateOf<SponsorSegment?>(null) }
     var hudText by remember { mutableStateOf<String?>(null) }
     var showSettingsSheet by remember { mutableStateOf(false) }
+
+    // Anichin Favorites, History & Donghua Update Notifier
+    val anichinRepo = remember { AnichinLibraryRepository(context.applicationContext) }
+    val anichinLibrary by anichinRepo.data.collectAsState()
+    var showAnichinLibrarySheet by remember { mutableStateOf(false) }
+    var isCheckingAnichinUpdates by remember { mutableStateOf(false) }
+    var currentAnichinUrl by remember { mutableStateOf("") }
+    var currentAnichinTitle by remember { mutableStateOf("") }
+    var currentAnichinSeriesUrl by remember { mutableStateOf("") }
+    var currentAnichinEpisode by remember { mutableStateOf("") }
+
+    // GitHub Releases In-App Self-Updater state
+    val updateScope = rememberCoroutineScope()
+    var pendingUpdate by remember { mutableStateOf<UpdateInfo?>(null) }
+    var isDownloadingUpdate by remember { mutableStateOf(false) }
+    var updateDownloadProgress by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(Unit) {
+        pendingUpdate = GitHubUpdater.checkForUpdate(BuildConfig.VERSION_NAME)
+        val favs = anichinLibrary.favorites
+        if (favs.isNotEmpty()) {
+            val (updatedAll, newlyUpdated) = AnichinUpdateChecker.checkUpdates(favs)
+            if (newlyUpdated.isNotEmpty()) {
+                anichinRepo.applyDetectedUpdates(updatedAll)
+                AnichinUpdateChecker.showUpdateNotification(context, newlyUpdated)
+                val first = newlyUpdated.first()
+                hudText = "Update Donghua: ${first.title} (${first.lastKnownEpisode})"
+            }
+        }
+    }
 
     // Track last user touch so the floating NovaTube pill auto-hides after 2.5 seconds
     var lastInteractionUptimeMs by remember { mutableLongStateOf(SystemClock.uptimeMillis()) }
@@ -296,11 +352,16 @@ fun YouTubeCloneScreen(
     }
 
     val isFullScreenOrLandscape = isInPipMode || isLandscape || customFullscreenView != null
+    val themeStyle = config.ui.themeStyle
+    val themeSurfaceColor = Color(themeStyle.surfaceHex)
+    val themeCardColor = Color(themeStyle.cardHex)
+    val themeAccentColor = Color(themeStyle.accentHex)
+    val themeBorderColor = Color(themeStyle.borderHex)
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(if (config.ui.oledModeEnabled) NovaColors.OledBlack else Color(0xFF0F0F0F))
+            .background(themeSurfaceColor)
     ) {
         AndroidView(
             factory = { ctx ->
@@ -394,6 +455,24 @@ fun YouTubeCloneScreen(
                                     }
                                 } else {
                                     activeManualSegment = null
+                                }
+                            }
+
+                            @JavascriptInterface
+                            fun onAnichinVisited(url: String, title: String, seriesUrl: String, episodeLabel: String) {
+                                post {
+                                    currentAnichinUrl = url
+                                    currentAnichinTitle = title
+                                    currentAnichinSeriesUrl = seriesUrl.ifBlank { url }
+                                    currentAnichinEpisode = episodeLabel
+                                    val path = runCatching { java.net.URI(url).path.orEmpty() }.getOrDefault("")
+                                    val isContentPage = path.length > 1 &&
+                                        !path.startsWith("/page/") &&
+                                        !path.startsWith("/genre/") &&
+                                        !path.startsWith("/tag/")
+                                    if (isContentPage) {
+                                        anichinRepo.recordHistory(url, title, episodeLabel)
+                                    }
                                 }
                             }
                         },
@@ -525,149 +604,266 @@ fun YouTubeCloneScreen(
                 )
             }
 
-            // YTKACE-style Floating Liquid Glass Control Pill:
-            // Auto-hides after 2.5s of inactivity or when video is playing,
-            // and is completely hidden in landscape / fullscreen mode.
-            androidx.compose.animation.AnimatedVisibility(
-                visible = pillVisible && !isFullScreenOrLandscape,
-                enter = fadeIn(),
-                exit = fadeOut(),
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 12.dp, bottom = 62.dp)
-            ) {
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(
-                            if (config.ui.liquidGlassHudEnabled) Color(0xCC14161E) else Color(0xF00C0C0E)
-                        )
-                        .border(1.dp, Color.White.copy(alpha = 0.22f), RoundedCornerShape(24.dp))
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    if (isWatchPage) {
-                        // Quick Speed Cycle Button
-                        Row(
+            // iPhone AssistiveTouch-style Draggable Round Floating Button + Popup Menu
+            if (!isFullScreenOrLandscape) {
+                var isFloatingMenuOpen by remember { mutableStateOf(false) }
+                val scope = rememberCoroutineScope()
+                val density = LocalDensity.current
+
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val btnSizeDp = 50.dp
+                    val btnSizePx = with(density) { btnSizeDp.toPx() }
+                    val edgeMarginPx = with(density) { 12.dp.toPx() }
+                    val maxWidthPx = with(density) { maxWidth.toPx() }
+                    val maxHeightPx = with(density) { maxHeight.toPx() }
+
+                    val offsetX = remember(maxWidthPx) {
+                        Animatable((maxWidthPx - btnSizePx - edgeMarginPx).coerceAtLeast(0f))
+                    }
+                    var offsetY by remember(maxHeightPx) {
+                        mutableFloatStateOf((maxHeightPx * 0.72f).coerceIn(edgeMarginPx, (maxHeightPx - btnSizePx - edgeMarginPx).coerceAtLeast(edgeMarginPx)))
+                    }
+
+                    // Dimmed scrim when AssistiveTouch menu is expanded
+                    if (isFloatingMenuOpen) {
+                        Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(16.dp))
-                                .clickable {
-                                    lastInteractionUptimeMs = SystemClock.uptimeMillis()
-                                    val speeds = listOf(1.0f, 1.25f, 1.5f, 2.0f, 3.0f, 0.75f)
-                                    val nextIdx =
-                                        (speeds.indexOfFirst { kotlin.math.abs(it - activeSpeed) < 0.05f } + 1) % speeds.size
-                                    activeSpeed = speeds[nextIdx]
-                                    webViewRef?.evaluateJavascript(
-                                        "(() => { const v = document.querySelector('video'); if (v) v.playbackRate = $activeSpeed; })();",
-                                        null
-                                    )
-                                    hudText = "Speed ${activeSpeed}x"
-                                }
-                                .padding(horizontal = 8.dp, vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Icon(
-                                Icons.Rounded.Speed,
-                                contentDescription = "Speed",
-                                tint = NovaColors.AccentCyan,
-                                modifier = Modifier.size(16.dp)
-                            )
-                            Spacer(modifier = Modifier.width(3.dp))
-                            Text(
-                                "${activeSpeed}x",
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
+                                .fillMaxSize()
+                                .background(Color.Black.copy(alpha = 0.35f))
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null
+                                ) { isFloatingMenuOpen = false }
+                        )
+                    }
 
-                        // Quick Loop Toggle
-                        IconButton(
-                            onClick = {
-                                lastInteractionUptimeMs = SystemClock.uptimeMillis()
-                                activeLoop = !activeLoop
-                                webViewRef?.evaluateJavascript(
-                                    "(() => { const v = document.querySelector('video'); if (v) v.loop = $activeLoop; })();",
-                                    null
-                                )
-                                hudText = if (activeLoop) "Loop Enabled" else "Loop Off"
-                            },
-                            modifier = Modifier.size(32.dp)
+                    // Expanded AssistiveTouch Floating Menu Card
+                    androidx.compose.animation.AnimatedVisibility(
+                        visible = isFloatingMenuOpen,
+                        enter = fadeIn() + scaleIn(initialScale = 0.85f),
+                        exit = fadeOut() + scaleOut(targetScale = 0.85f),
+                        modifier = Modifier.align(Alignment.Center)
+                    ) {
+                        Column(
+                            modifier = Modifier
+                                .width(276.dp)
+                                .clip(RoundedCornerShape(28.dp))
+                                .background(themeCardColor)
+                                .border(1.dp, themeBorderColor, RoundedCornerShape(28.dp))
+                                .padding(16.dp),
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
                         ) {
-                            Icon(
-                                Icons.Rounded.Repeat,
-                                contentDescription = "Loop",
-                                tint = if (activeLoop) NovaColors.AccentCyan else Color.White.copy(alpha = 0.7f),
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-
-                        // Quick PiP Button
-                        if (config.playback.pipUnlockEnabled && activity != null) {
-                            IconButton(
-                                onClick = { runCatching { activity.enterPictureInPictureMode() } },
-                                modifier = Modifier.size(32.dp)
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(
-                                    Icons.Rounded.PictureInPictureAlt,
-                                    contentDescription = "PiP",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(18.dp)
+                                Image(
+                                    painter = painterResource(id = R.drawable.novatube_logo),
+                                    contentDescription = null,
+                                    modifier = Modifier
+                                        .size(22.dp)
+                                        .clip(CircleShape)
                                 )
+                                Text(
+                                    text = "Nova Menu",
+                                    color = Color.White,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+
+                            // Row 1: Channel Switcher (YouTube / Anichin) + Settings
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly
+                            ) {
+                                AssistiveMenuButton(
+                                    icon = Icons.Rounded.LiveTv,
+                                    label = "YouTube",
+                                    tint = if (activeChannel == NovaChannel.YOUTUBE) NovaColors.AccentRed else Color.White.copy(alpha = 0.7f),
+                                    selected = activeChannel == NovaChannel.YOUTUBE
+                                ) {
+                                    isFloatingMenuOpen = false
+                                    switchChannel(NovaChannel.YOUTUBE)
+                                }
+                                AssistiveMenuButton(
+                                    icon = Icons.Rounded.LiveTv,
+                                    label = "Anichin",
+                                    tint = if (activeChannel == NovaChannel.ANICHIN) NovaColors.AccentCyan else Color.White.copy(alpha = 0.7f),
+                                    selected = activeChannel == NovaChannel.ANICHIN
+                                ) {
+                                    isFloatingMenuOpen = false
+                                    switchChannel(NovaChannel.ANICHIN)
+                                }
+                                AssistiveMenuButton(
+                                    icon = Icons.Rounded.Settings,
+                                    label = "Settings",
+                                    tint = Color.White,
+                                    selected = false
+                                ) {
+                                    isFloatingMenuOpen = false
+                                    showSettingsSheet = true
+                                }
+                            }
+
+                            // Row 2: Library (Favorit & History) + Update Check
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceEvenly
+                            ) {
+                                if (activeChannel == NovaChannel.ANICHIN) {
+                                    val targetSeries = currentAnichinSeriesUrl.ifBlank { webViewRef?.url.orEmpty() }
+                                    val isFav = targetSeries.isNotBlank() && anichinRepo.isFavorite(targetSeries)
+                                    AssistiveMenuButton(
+                                        icon = Icons.Rounded.Star,
+                                        label = if (isFav) "Favorited" else "Favorit",
+                                        tint = if (isFav) Color(0xFFFBBF24) else Color.White.copy(alpha = 0.75f),
+                                        selected = isFav
+                                    ) {
+                                        isFloatingMenuOpen = false
+                                        val pageUrl = currentAnichinUrl.ifBlank { webViewRef?.url.orEmpty() }
+                                        val sUrl = currentAnichinSeriesUrl.ifBlank { pageUrl }
+                                        val title = currentAnichinTitle.ifBlank { webViewRef?.title ?: "Donghua" }
+                                        if (sUrl.isNotBlank()) {
+                                            val added = anichinRepo.toggleFavorite(sUrl, title, currentAnichinEpisode, pageUrl)
+                                            hudText = if (added) "Ditambahkan ke Favorit" else "Dihapus dari Favorit"
+                                        }
+                                    }
+                                }
+                                val hasDonghuaUpdate = anichinLibrary.favorites.any { it.hasUpdate }
+                                AssistiveMenuButton(
+                                    icon = Icons.Rounded.Bookmarks,
+                                    label = if (hasDonghuaUpdate) "Library •" else "Library",
+                                    tint = if (hasDonghuaUpdate) Color(0xFFFBBF24) else NovaColors.AccentCyan,
+                                    selected = hasDonghuaUpdate
+                                ) {
+                                    isFloatingMenuOpen = false
+                                    showAnichinLibrarySheet = true
+                                }
+                                AssistiveMenuButton(
+                                    icon = Icons.Rounded.SystemUpdate,
+                                    label = "Update",
+                                    tint = themeAccentColor,
+                                    selected = pendingUpdate != null
+                                ) {
+                                    isFloatingMenuOpen = false
+                                    hudText = "Cek update..."
+                                    updateScope.launch {
+                                        val info = GitHubUpdater.checkForUpdate(BuildConfig.VERSION_NAME)
+                                        if (info != null) {
+                                            pendingUpdate = info
+                                        } else {
+                                            hudText = "Versi terbaru (v${BuildConfig.VERSION_NAME})"
+                                        }
+                                    }
+                                }
+                            }
+
+                            // Row 3: Video Controls (when on Watch page)
+                            if (isWatchPage) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.SpaceEvenly
+                                ) {
+                                    AssistiveMenuButton(
+                                        icon = Icons.Rounded.Speed,
+                                        label = "${activeSpeed}x",
+                                        tint = NovaColors.AccentCyan,
+                                        selected = activeSpeed != 1.0f
+                                    ) {
+                                        val speeds = listOf(1.0f, 1.25f, 1.5f, 2.0f, 3.0f, 0.75f)
+                                        val nextIdx =
+                                            (speeds.indexOfFirst { kotlin.math.abs(it - activeSpeed) < 0.05f } + 1) % speeds.size
+                                        activeSpeed = speeds[nextIdx]
+                                        webViewRef?.evaluateJavascript(
+                                            "(() => { const v = document.querySelector('video'); if (v) v.playbackRate = $activeSpeed; })();",
+                                            null
+                                        )
+                                        hudText = "Speed ${activeSpeed}x"
+                                    }
+                                    AssistiveMenuButton(
+                                        icon = Icons.Rounded.Repeat,
+                                        label = if (activeLoop) "Loop On" else "Loop",
+                                        tint = if (activeLoop) NovaColors.AccentCyan else Color.White.copy(alpha = 0.75f),
+                                        selected = activeLoop
+                                    ) {
+                                        activeLoop = !activeLoop
+                                        webViewRef?.evaluateJavascript(
+                                            "(() => { const v = document.querySelector('video'); if (v) v.loop = $activeLoop; })();",
+                                            null
+                                        )
+                                        hudText = if (activeLoop) "Loop Enabled" else "Loop Off"
+                                    }
+                                    if (config.playback.pipUnlockEnabled && activity != null) {
+                                        AssistiveMenuButton(
+                                            icon = Icons.Rounded.PictureInPictureAlt,
+                                            label = "PiP",
+                                            tint = Color.White,
+                                            selected = false
+                                        ) {
+                                            isFloatingMenuOpen = false
+                                            runCatching { activity.enterPictureInPictureMode() }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
 
-                    // Quick Channel Switcher (YouTube <-> Anichin)
-                    Row(
+                    // Draggable Round AssistiveTouch Ball
+                    Box(
                         modifier = Modifier
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(Color.White.copy(alpha = 0.08f))
-                            .clickable {
-                                val nextChannel = if (activeChannel == NovaChannel.YOUTUBE) {
-                                    NovaChannel.ANICHIN
-                                } else {
-                                    NovaChannel.YOUTUBE
-                                }
-                                switchChannel(nextChannel)
-                            }
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            Icons.Rounded.LiveTv,
-                            contentDescription = "Switch Channel",
-                            tint = if (activeChannel == NovaChannel.ANICHIN) NovaColors.AccentCyan else NovaColors.AccentRed,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Spacer(modifier = Modifier.width(4.dp))
-                        Text(
-                            text = activeChannel.shortLabel,
-                            color = Color.White,
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
-
-                    // NovaTube Logo Settings Button
-                    IconButton(
-                        onClick = {
-                            lastInteractionUptimeMs = SystemClock.uptimeMillis()
-                            showSettingsSheet = true
-                        },
-                        modifier = Modifier
-                            .size(34.dp)
+                            .offset { IntOffset(offsetX.value.roundToInt(), offsetY.roundToInt()) }
+                            .size(btnSizeDp)
+                            .alpha(if (pillVisible || isFloatingMenuOpen) 1f else 0.50f)
                             .clip(CircleShape)
-                            .background(Color(0xFF000324))
+                            .background(themeCardColor)
+                            .border(1.5.dp, themeBorderColor, CircleShape)
+                            .pointerInput(maxWidthPx, maxHeightPx) {
+                                detectDragGestures(
+                                    onDragStart = {
+                                        lastInteractionUptimeMs = SystemClock.uptimeMillis()
+                                    },
+                                    onDrag = { change, dragAmount ->
+                                        change.consume()
+                                        lastInteractionUptimeMs = SystemClock.uptimeMillis()
+                                        val nextX = (offsetX.value + dragAmount.x)
+                                            .coerceIn(0f, (maxWidthPx - btnSizePx).coerceAtLeast(0f))
+                                        offsetY = (offsetY + dragAmount.y)
+                                            .coerceIn(edgeMarginPx, (maxHeightPx - btnSizePx - edgeMarginPx).coerceAtLeast(edgeMarginPx))
+                                        scope.launch { offsetX.snapTo(nextX) }
+                                    },
+                                    onDragEnd = {
+                                        val snapLeft = edgeMarginPx
+                                        val snapRight = (maxWidthPx - btnSizePx - edgeMarginPx).coerceAtLeast(edgeMarginPx)
+                                        val targetX = if (offsetX.value + btnSizePx / 2f < maxWidthPx / 2f) snapLeft else snapRight
+                                        scope.launch { offsetX.animateTo(targetX) }
+                                    }
+                                )
+                            }
+                            .clickable {
+                                lastInteractionUptimeMs = SystemClock.uptimeMillis()
+                                isFloatingMenuOpen = !isFloatingMenuOpen
+                            },
+                        contentAlignment = Alignment.Center
                     ) {
-                        Image(
-                            painter = painterResource(id = R.drawable.novatube_logo),
-                            contentDescription = "NovaTube Settings",
+                        Box(
                             modifier = Modifier
-                                .size(26.dp)
+                                .size(38.dp)
                                 .clip(CircleShape)
-                        )
+                                .border(1.dp, Color.White.copy(alpha = 0.22f), CircleShape)
+                                .background(Color(0xFF000324)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Image(
+                                painter = painterResource(id = R.drawable.novatube_logo),
+                                contentDescription = "Nova Floating Menu",
+                                modifier = Modifier
+                                    .size(26.dp)
+                                    .clip(CircleShape)
+                            )
+                        }
                     }
                 }
             }
@@ -708,10 +904,8 @@ fun YouTubeCloneScreen(
                 Box(
                     modifier = Modifier
                         .clip(RoundedCornerShape(20.dp))
-                        .background(
-                            if (config.ui.liquidGlassHudEnabled) Color(0xCC16181E) else Color(0xEB0C0C0E)
-                        )
-                        .border(1.dp, Color.White.copy(alpha = 0.3f), RoundedCornerShape(20.dp))
+                        .background(themeCardColor)
+                        .border(1.dp, themeBorderColor, RoundedCornerShape(20.dp))
                         .padding(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     Text(
@@ -729,7 +923,7 @@ fun YouTubeCloneScreen(
         ModalBottomSheet(
             onDismissRequest = { showSettingsSheet = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
-            containerColor = NovaColors.OledBlack
+            containerColor = themeSurfaceColor
         ) {
             Column(
                 modifier = Modifier
@@ -823,6 +1017,146 @@ fun YouTubeCloneScreen(
             }
         }
     }
+
+    pendingUpdate?.let { update ->
+        AlertDialog(
+            onDismissRequest = { if (!isDownloadingUpdate) pendingUpdate = null },
+            containerColor = themeCardColor,
+            titleContentColor = Color.White,
+            textContentColor = NovaColors.TextSecondary,
+            title = {
+                Text(
+                    text = "Update Tersedia (${update.versionName})",
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 17.sp
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(text = update.changelog, fontSize = 13.sp)
+                    if (isDownloadingUpdate) {
+                        LinearProgressIndicator(
+                            progress = { updateDownloadProgress / 100f },
+                            color = themeAccentColor,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        Text(
+                            text = "Mengunduh update... $updateDownloadProgress%",
+                            color = Color.White,
+                            fontSize = 12.sp
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    enabled = !isDownloadingUpdate,
+                    onClick = {
+                        isDownloadingUpdate = true
+                        updateDownloadProgress = 0
+                        updateScope.launch {
+                            val apkFile = GitHubUpdater.downloadApk(context, update.downloadUrl) { pct ->
+                                updateDownloadProgress = pct
+                            }
+                            isDownloadingUpdate = false
+                            if (apkFile != null) {
+                                pendingUpdate = null
+                                GitHubUpdater.installApk(context, apkFile)
+                            } else {
+                                hudText = "Gagal mengunduh update"
+                            }
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = themeAccentColor,
+                        contentColor = Color.Black
+                    )
+                ) {
+                    Text(if (isDownloadingUpdate) "Downloading..." else "Download & Update", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                if (!isDownloadingUpdate) {
+                    TextButton(onClick = { pendingUpdate = null }) {
+                        Text("Nanti", color = NovaColors.TextSecondary)
+                    }
+                }
+            }
+        )
+    }
+
+    if (showAnichinLibrarySheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showAnichinLibrarySheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = themeSurfaceColor
+        ) {
+            AnichinLibrarySheet(
+                library = anichinLibrary,
+                isCheckingUpdates = isCheckingAnichinUpdates,
+                onCheckUpdates = {
+                    isCheckingAnichinUpdates = true
+                    updateScope.launch {
+                        val (updatedAll, newlyUpdated) = AnichinUpdateChecker.checkUpdates(anichinLibrary.favorites)
+                        isCheckingAnichinUpdates = false
+                        if (newlyUpdated.isNotEmpty()) {
+                            anichinRepo.applyDetectedUpdates(updatedAll)
+                            AnichinUpdateChecker.showUpdateNotification(context, newlyUpdated)
+                            hudText = "${newlyUpdated.size} donghua ada update!"
+                        } else {
+                            hudText = "Semua donghua favorit sudah terbaru"
+                        }
+                    }
+                },
+                onOpenUrl = { targetUrl ->
+                    showAnichinLibrarySheet = false
+                    if (activeChannel != NovaChannel.ANICHIN) {
+                        onUpdateUi { it.copy(activeChannel = NovaChannel.ANICHIN) }
+                    }
+                    webViewRef?.loadUrl(targetUrl)
+                },
+                onMarkFavoriteSeen = anichinRepo::markUpdateSeen,
+                onRemoveFavorite = anichinRepo::removeFavorite,
+                onRemoveHistory = anichinRepo::removeHistory,
+                onClearHistory = anichinRepo::clearHistory,
+                onDismiss = { showAnichinLibrarySheet = false }
+            )
+        }
+    }
+}
+
+@Composable
+private fun AssistiveMenuButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    tint: Color,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .width(74.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(if (selected) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.05f))
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(5.dp)
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = label,
+            tint = tint,
+            modifier = Modifier.size(22.dp)
+        )
+        Text(
+            text = label,
+            color = Color.White,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.SemiBold,
+            maxLines = 1
+        )
+    }
 }
 
 private fun extractIdFromUrl(url: String): String? {
@@ -909,14 +1243,25 @@ private fun injectNovaEnhancements(
         }
     """.trimIndent()
 
-    val oledCss = if (config.ui.oledModeEnabled) {
+    val themeBg = config.ui.themeStyle.webBgHex
+    val glassHeaderCss = if (config.ui.themeStyle == NovaThemeStyle.LIQUID_GLASS) {
         """
-        html, body, ytm-app, ytm-watch, ytm-SingleColumnWatchNextResultsRenderer,
-        ytm-RichGridRenderer, .mobile-topbar-header, ytm-pivot-bar-renderer {
-            background-color: #000000 !important;
+        .mobile-topbar-header, ytm-pivot-bar-renderer {
+            background-color: rgba(12, 18, 36, 0.78) !important;
+            backdrop-filter: blur(16px) !important;
+            -webkit-backdrop-filter: blur(16px) !important;
+            border-color: rgba(103, 232, 249, 0.25) !important;
         }
         """.trimIndent()
     } else ""
+
+    val oledCss = """
+        html, body, ytm-app, ytm-watch, ytm-SingleColumnWatchNextResultsRenderer,
+        ytm-RichGridRenderer, .mobile-topbar-header, ytm-pivot-bar-renderer {
+            background-color: $themeBg !important;
+        }
+        $glassHeaderCss
+    """.trimIndent()
 
     val shortsCss = if (config.ui.hideShortsShelf) {
         """
@@ -1043,10 +1388,12 @@ private fun injectAnichinEnhancements(
         """.trimIndent()
     } else ""
 
+    val themeBg = config.ui.themeStyle.webBgHex
     val viewportCss = """
         html, body {
             overflow-x: hidden !important;
             max-width: 100vw !important;
+            background-color: $themeBg !important;
         }
     """.trimIndent()
 
@@ -1102,6 +1449,18 @@ private fun injectAnichinEnhancements(
                     Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
                     window.addEventListener('visibilitychange', e => e.stopImmediatePropagation(), true);
                 } catch (e) {}
+            }
+
+            // Record current Anichin page for History & Favorite Series tracking
+            if (window.NovaBridge && window.NovaBridge.onAnichinVisited) {
+                const h1 = document.querySelector('h1.entry-title, h1');
+                const rawTitle = (h1 && h1.textContent ? h1.textContent : document.title) || 'Anichin';
+                const cleanTitle = rawTitle.replace(/\s*-\s*Anichin.*$/i, '').trim();
+                const seriesLink = document.querySelector('.breadcrumb a[href*="/seri/"], .allc a[href*="/seri/"], a[href*="/seri/"]');
+                const seriesUrl = seriesLink ? seriesLink.href : location.href;
+                const epMatch = cleanTitle.match(/Episode\s*\d+/i);
+                const epLabel = epMatch ? epMatch[0] : '';
+                window.NovaBridge.onAnichinVisited(location.href, cleanTitle, seriesUrl, epLabel);
             }
         })();
     """.trimIndent()

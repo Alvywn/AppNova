@@ -3,7 +3,10 @@ package com.appnova.novatube.ui.theme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.graphics.Color
+import com.appnova.novatube.config.NovaThemeStyle
 
 object NovaColors {
     val OledBlack = Color(0xFF000000)
@@ -18,23 +21,29 @@ object NovaColors {
     val TextSecondary = Color(0xFF94A3B8)
 }
 
-private val NovaDarkScheme = darkColorScheme(
-    primary = NovaColors.AccentRed,
-    secondary = NovaColors.AccentCyan,
-    background = NovaColors.OledBlack,
-    surface = NovaColors.GlassSurface,
-    surfaceVariant = NovaColors.GlassSurfaceElevated,
-    onPrimary = Color.White,
-    onBackground = NovaColors.TextPrimary,
-    onSurface = NovaColors.TextPrimary,
-    onSurfaceVariant = NovaColors.TextSecondary,
-    outline = NovaColors.GlassBorder
-)
+val LocalNovaThemeStyle = compositionLocalOf { NovaThemeStyle.LIQUID_GLASS }
 
 @Composable
-fun NovaTubeTheme(content: @Composable () -> Unit) {
-    MaterialTheme(
-        colorScheme = NovaDarkScheme,
-        content = content
+fun NovaTubeTheme(
+    themeStyle: NovaThemeStyle = NovaThemeStyle.LIQUID_GLASS,
+    content: @Composable () -> Unit
+) {
+    val scheme = darkColorScheme(
+        primary = Color(themeStyle.accentHex),
+        secondary = Color(themeStyle.accentHex),
+        background = Color(themeStyle.surfaceHex),
+        surface = Color(themeStyle.cardHex),
+        surfaceVariant = Color(themeStyle.cardHex),
+        onPrimary = Color.Black,
+        onBackground = NovaColors.TextPrimary,
+        onSurface = NovaColors.TextPrimary,
+        onSurfaceVariant = NovaColors.TextSecondary,
+        outline = Color(themeStyle.borderHex)
     )
+    CompositionLocalProvider(LocalNovaThemeStyle provides themeStyle) {
+        MaterialTheme(
+            colorScheme = scheme,
+            content = content
+        )
+    }
 }
