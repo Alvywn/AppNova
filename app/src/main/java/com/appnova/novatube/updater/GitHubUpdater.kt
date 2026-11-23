@@ -22,8 +22,10 @@ data class UpdateInfo(
 )
 
 object GitHubUpdater {
-    private const val LATEST_RELEASE_URL =
-        "https://api.github.com/repos/Alvywn/AppNova/releases/latest"
+    private const val REPO_PATH = "Alvywn/AppNova"
+    private const val WEB_LATEST_URL = "https://github.com/$REPO_PATH/releases/latest"
+    private const val LATEST_RELEASE_API_URL =
+        "https://api.github.com/repos/$REPO_PATH/releases/latest"
 
     fun isNewerVersion(remoteTag: String, currentVersion: String): Boolean {
         val remoteParts = normalizeVersion(remoteTag)
@@ -47,44 +49,89 @@ object GitHubUpdater {
             .map { it.toIntOrNull() ?: 0 }
 
     suspend fun checkForUpdate(currentVersion: String): UpdateInfo? = withContext(Dispatchers.IO) {
-        runCatching {
-            val conn = (URL(LATEST_RELEASE_URL).openConnection() as HttpURLConnection).apply {
-                requestMethod = "GET"
-                connectTimeout = 6000
-                readTimeout = 6000
-                setRequestProperty("Accept", "application/vnd.github+json")
-                setRequestProperty("User-Agent", "NovaTube-Updater")
-            }
-            if (conn.responseCode != 200) return@runCatching null
-            val body = conn.inputStream.bufferedReader().use { it.readText() }
-            val json = JSONObject(body)
-            val tagName = json.optString("tag_name")
-            if (tagName.isBlank() || !isNewerVersion(tagName, currentVersion)) {
-                return@runCatching null
-            }
-
-            val assets = json.optJSONArray("assets") ?: return@runCatching null
-            var apkUrl = ""
-            var apkSize = 0L
-            for (i in 0 until assets.length()) {
-                val asset = assets.getJSONObject(i)
-                val name = asset.optString("name")
-                if (name.endsWith(".apk", ignoreCase = true)) {
-                    apkUrl = asset.optString("browser_download_url")
-                    apkSize = asset.optLong("size", 0L)
-                    break
-                }
-            }
-            if (apkUrl.isBlank()) return@runCatching null
-
-            UpdateInfo(
-                versionName = tagName,
-                changelog = json.optString("body").ifBlank { "New NovaTube update is available." },
-                downloadUrl = apkUrl,
-                sizeBytes = apkSize
-            )
-        }.getOrNull()
+        // Primary: GitHub web redirect + expanded_assets (zero API rate limit!)
+        checkViaWebRedirect(currentVersion) ?: checkViaApiFallback(currentVersion)
     }
+
+    private fun checkViaWebRedirect(currentVersion: String): UpdateInfo? = runCatching {
+        val conn = (URL(WEB_LATEST_URL).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 7000
+            readTimeout = 7000
+            instanceFollowRedirects = true
+            setRequestProperty("User-Agent", "NovaTube-Updater")
+        }
+        conn.inputStream.use { it.readBytes() }
+        val finalUrl = conn.url?.toString().orEmpty()
+        val tagMatch = Regex("/releases/tag/([^/?#]+)").find(finalUrl) ?: return@runCatching null
+        val tagName = tagMatch.groupValues[1]
+        if (tagName.isBlank() || !isNewerVersion(tagName, currentVersion)) {
+            return@runCatching null
+        }
+
+        val assetsUrl = "https://github.com/$REPO_PATH/releases/expanded_assets/$tagName"
+        val assetsConn = (URL(assetsUrl).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 7000
+            readTimeout = 7000
+            setRequestProperty("User-Agent", "NovaTube-Updater")
+        }
+        val html = if (assetsConn.responseCode == 200) {
+            assetsConn.inputStream.bufferedReader().use { it.readText() }
+        } else ""
+
+        val apkMatch = Regex("""href="(/$REPO_PATH/releases/download/[^"]+\.apk)"""").find(html)
+        val apkUrl = if (apkMatch != null) {
+            "https://github.com${apkMatch.groupValues[1]}"
+        } else {
+            "https://github.com/$REPO_PATH/releases/download/$tagName/app-debug.apk"
+        }
+
+        UpdateInfo(
+            versionName = tagName,
+            changelog = "Rilis terbaru $tagName tersedia di GitHub Releases.",
+            downloadUrl = apkUrl,
+            sizeBytes = 0L
+        )
+    }.getOrNull()
+
+    private fun checkViaApiFallback(currentVersion: String): UpdateInfo? = runCatching {
+        val conn = (URL(LATEST_RELEASE_API_URL).openConnection() as HttpURLConnection).apply {
+            requestMethod = "GET"
+            connectTimeout = 6000
+            readTimeout = 6000
+            setRequestProperty("Accept", "application/vnd.github+json")
+            setRequestProperty("User-Agent", "NovaTube-Updater")
+        }
+        if (conn.responseCode != 200) return@runCatching null
+        val body = conn.inputStream.bufferedReader().use { it.readText() }
+        val json = JSONObject(body)
+        val tagName = json.optString("tag_name")
+        if (tagName.isBlank() || !isNewerVersion(tagName, currentVersion)) {
+            return@runCatching null
+        }
+
+        val assets = json.optJSONArray("assets") ?: return@runCatching null
+        var apkUrl = ""
+        var apkSize = 0L
+        for (i in 0 until assets.length()) {
+            val asset = assets.getJSONObject(i)
+            val name = asset.optString("name")
+            if (name.endsWith(".apk", ignoreCase = true)) {
+                apkUrl = asset.optString("browser_download_url")
+                apkSize = asset.optLong("size", 0L)
+                break
+            }
+        }
+        if (apkUrl.isBlank()) return@runCatching null
+
+        UpdateInfo(
+            versionName = tagName,
+            changelog = json.optString("body").ifBlank { "New NovaTube update is available." },
+            downloadUrl = apkUrl,
+            sizeBytes = apkSize
+        )
+    }.getOrNull()
 
     suspend fun downloadApk(
         context: Context,
