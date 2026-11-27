@@ -86,6 +86,7 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -102,9 +103,13 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.appnova.novatube.BuildConfig
 import com.appnova.novatube.R
 import com.appnova.novatube.adblock.BraveShieldsEngine
@@ -120,6 +125,7 @@ import com.appnova.novatube.config.SponsorCategory
 import com.appnova.novatube.config.UiConfig
 import com.appnova.novatube.player.NovaPlaybackService
 import com.appnova.novatube.sponsorblock.SponsorSegment
+import com.appnova.novatube.ui.MainActivity
 import com.appnova.novatube.ui.theme.NovaColors
 import com.appnova.novatube.updater.GitHubUpdater
 import com.appnova.novatube.updater.UpdateInfo
@@ -129,21 +135,28 @@ import kotlinx.coroutines.launch
 
 /**
  * Custom WebView that:
- * 1. Keeps visibility as VISIBLE when Background Playback is enabled so Chromium never pauses
- *    audio/video when the screen turns off or the user switches apps.
- * 2. Notifies the UI whenever the user touches the screen so the floating NovaTube pill
- *    can temporarily appear and then auto-hide after 2.5 seconds.
+ * 1. Keeps visibility as VISIBLE only when Background Playback is enabled AND audio is active
+ *    so Chromium does not pause audio when locking screen or switching apps.
+ * 2. Re-notifies Chromium compositor cleanly on foreground return so SurfaceFlinger & MediaCodec
+ *    re-bind without A/V desync or endless buffering spinners.
  */
 class NovaYouTubeWebView(context: Context) : WebView(context) {
     var allowBackgroundPlay: Boolean = true
+    var isVideoCurrentlyPlaying: Boolean = false
     var onUserTouch: (() -> Unit)? = null
 
     override fun onWindowVisibilityChanged(visibility: Int) {
-        if (allowBackgroundPlay && visibility != View.VISIBLE) {
+        if (allowBackgroundPlay && isVideoCurrentlyPlaying && visibility != View.VISIBLE) {
             super.onWindowVisibilityChanged(View.VISIBLE)
         } else {
             super.onWindowVisibilityChanged(visibility)
         }
+    }
+
+    fun notifyAppForegrounded() {
+        super.onWindowVisibilityChanged(View.VISIBLE)
+        requestLayout()
+        invalidate()
     }
 
     override fun dispatchTouchEvent(ev: MotionEvent?): Boolean {
@@ -211,6 +224,7 @@ fun YouTubeCloneScreen(
     val context = LocalContext.current
     val activity = context as? Activity
     val configuration = LocalConfiguration.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val isLandscape = configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     var webViewRef by remember { mutableStateOf<NovaYouTubeWebView?>(null) }
@@ -239,6 +253,15 @@ fun YouTubeCloneScreen(
     var isDownloadingUpdate by remember { mutableStateOf(false) }
     var updateDownloadProgress by remember { mutableIntStateOf(0) }
 
+    var activeSpeed by remember { mutableFloatStateOf(config.playback.defaultSpeed) }
+    var activeLoop by remember { mutableStateOf(config.playback.loopByDefault) }
+
+    // Keep live references so WebView callbacks & JavascriptInterface NEVER read stale closure values
+    val currentConfig by rememberUpdatedState(config)
+    val currentSpeedState by rememberUpdatedState(activeSpeed)
+    val currentLoopState by rememberUpdatedState(activeLoop)
+    val currentInPipState by rememberUpdatedState(isInPipMode)
+
     LaunchedEffect(Unit) {
         pendingUpdate = GitHubUpdater.checkForUpdate(BuildConfig.VERSION_NAME)
         val favs = anichinLibrary.favorites
@@ -257,12 +280,48 @@ fun YouTubeCloneScreen(
     var lastInteractionUptimeMs by remember { mutableLongStateOf(SystemClock.uptimeMillis()) }
     var pillVisible by remember { mutableStateOf(true) }
 
-    var activeSpeed by remember { mutableFloatStateOf(config.playback.defaultSpeed) }
-    var activeLoop by remember { mutableStateOf(config.playback.loopByDefault) }
-
     // Fullscreen custom view state from WebChromeClient
     var customFullscreenView by remember { mutableStateOf<View?>(null) }
     var customViewCallback by remember { mutableStateOf<WebChromeClient.CustomViewCallback?>(null) }
+
+    // Lifecycle observer to eliminate A/V desync & stuck buffer when leaving and returning to the app
+    DisposableEffect(lifecycleOwner, webViewRef) {
+        var wasStoppedInBackground = false
+        val observer = LifecycleEventObserver { _, event ->
+            val wv = webViewRef ?: return@LifecycleEventObserver
+            when (event) {
+                Lifecycle.Event.ON_STOP -> {
+                    if (!currentInPipState) {
+                        wasStoppedInBackground = true
+                        if (currentConfig.playback.backgroundPlayEnabled) {
+                            // Detach video track decoding while surface is gone so audio runs smoothly
+                            // without stalling Chromium's hardware video decoder queue
+                            suspendWebVideoTrackForBackground(wv)
+                        } else {
+                            pauseAllWebVideos(wv)
+                            wv.onPause()
+                        }
+                    }
+                }
+                Lifecycle.Event.ON_RESUME -> {
+                    wv.onResume()
+                    wv.resumeTimers()
+                    wv.notifyAppForegrounded()
+                    if (wasStoppedInBackground) {
+                        wasStoppedInBackground = false
+                        resyncWebVideoPlayback(wv, currentSpeedState)
+                        wv.postDelayed({ resyncWebVideoPlayback(wv, currentSpeedState) }, 220L)
+                        wv.postDelayed({ fixViewportAlignment(wv) }, 300L)
+                    }
+                }
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+        }
+    }
 
     BackHandler {
         if (customFullscreenView != null) {
@@ -311,7 +370,7 @@ fun YouTubeCloneScreen(
         }
     }
 
-    // Re-apply CSS / playback settings whenever config changes (only on supported channel pages)
+    // Re-apply CSS / playback settings whenever config changes
     LaunchedEffect(config, webViewRef) {
         val wv = webViewRef ?: return@LaunchedEffect
         wv.allowBackgroundPlay = config.playback.backgroundPlayEnabled
@@ -337,6 +396,7 @@ fun YouTubeCloneScreen(
         currentVideoId = ""
         isWatchPage = false
         isVideoPlaying = false
+        webViewRef?.isVideoCurrentlyPlaying = false
         sponsorSegments = emptyList()
         activeManualSegment = null
         onVideoPlayingStateChanged(false)
@@ -344,16 +404,22 @@ fun YouTubeCloneScreen(
         hudText = "Channel: ${target.displayName}"
     }
 
-    // Keep foreground media service alive when background playback is enabled
-    DisposableEffect(Unit) {
+    // Keep foreground media service synchronized with Background Playback toggle
+    DisposableEffect(config.playback.backgroundPlayEnabled, isVideoPlaying) {
         val serviceIntent = Intent(context, NovaPlaybackService::class.java)
-        runCatching { context.startService(serviceIntent) }
+        runCatching {
+            if (config.playback.backgroundPlayEnabled && isVideoPlaying) {
+                ContextCompat.startForegroundService(context, serviceIntent)
+            } else if (!config.playback.backgroundPlayEnabled) {
+                context.stopService(serviceIntent)
+            }
+        }
         onDispose { }
     }
 
     val isFullScreenOrLandscape = isInPipMode || isLandscape || customFullscreenView != null
     val themeStyle = config.ui.themeStyle
-    val themeSurfaceColor = Color(themeStyle.surfaceHex)
+    val themeSurfaceColor = if (config.ui.oledModeEnabled) Color.Black else Color(themeStyle.surfaceHex)
     val themeCardColor = Color(themeStyle.cardHex)
     val themeAccentColor = Color(themeStyle.accentHex)
     val themeBorderColor = Color(themeStyle.borderHex)
@@ -371,7 +437,7 @@ fun YouTubeCloneScreen(
                         ViewGroup.LayoutParams.MATCH_PARENT
                     )
                     setBackgroundColor(AndroidColor.BLACK)
-                    allowBackgroundPlay = config.playback.backgroundPlayEnabled
+                    allowBackgroundPlay = currentConfig.playback.backgroundPlayEnabled
                     onUserTouch = {
                         lastInteractionUptimeMs = SystemClock.uptimeMillis()
                     }
@@ -380,7 +446,6 @@ fun YouTubeCloneScreen(
                     CookieManager.getInstance().apply {
                         setAcceptCookie(true)
                         setAcceptThirdPartyCookies(wv, true)
-                        // Enable YouTube native dark mode by default
                         setCookie("https://m.youtube.com", "PREF=f6=400; Domain=.youtube.com; Path=/")
                     }
 
@@ -390,7 +455,6 @@ fun YouTubeCloneScreen(
                         mediaPlaybackRequiresUserGesture = false
                         mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
                         cacheMode = WebSettings.LOAD_DEFAULT
-                        // Let m.youtube.com use its native mobile viewport without landscape zoom/offset glitches
                         useWideViewPort = false
                         loadWithOverviewMode = false
                         setSupportZoom(false)
@@ -406,10 +470,12 @@ fun YouTubeCloneScreen(
                         object {
                             @JavascriptInterface
                             fun onUrlChanged(url: String) {
+                                val cfg = currentConfig
                                 val watch = url.contains("/watch") || url.contains("/shorts/")
                                 isWatchPage = watch
                                 if (!watch) {
                                     isVideoPlaying = false
+                                    wv.isVideoCurrentlyPlaying = false
                                     onVideoPlayingStateChanged(false)
                                 }
                                 post { fixViewportAlignment(wv) }
@@ -418,7 +484,7 @@ fun YouTubeCloneScreen(
                                     currentVideoId = vid
                                     sponsorSegments = emptyList()
                                     activeManualSegment = null
-                                    if (config.sponsorBlock.enabled) {
+                                    if (cfg.sponsorBlock.enabled) {
                                         onFetchSponsorSegments(vid) { segs ->
                                             sponsorSegments = segs
                                         }
@@ -428,13 +494,15 @@ fun YouTubeCloneScreen(
 
                             @JavascriptInterface
                             fun onVideoProgress(positionSec: Double, durationSec: Double, playing: Boolean) {
+                                val cfg = currentConfig
                                 isVideoPlaying = playing
+                                wv.isVideoCurrentlyPlaying = playing
                                 onVideoPlayingStateChanged(playing)
-                                if (!playing || !config.sponsorBlock.enabled || currentVideoId.isEmpty()) return
+                                if (!playing || !cfg.sponsorBlock.enabled || currentVideoId.isEmpty()) return
                                 val posMs = (positionSec * 1000.0).toLong()
                                 val seg = onCheckSponsor(sponsorSegments, posMs)
                                 if (seg != null) {
-                                    when (config.sponsorBlock.skipMode) {
+                                    when (cfg.sponsorBlock.skipMode) {
                                         SkipMode.AUTO_SKIP -> {
                                             if (onMarkSponsorSkipped(currentVideoId, seg)) {
                                                 val targetSec = seg.endMs / 1000.0
@@ -444,7 +512,7 @@ fun YouTubeCloneScreen(
                                                         null
                                                     )
                                                 }
-                                                if (config.sponsorBlock.showSkipToast) {
+                                                if (cfg.sponsorBlock.showSkipToast) {
                                                     hudText = "Skipped ${seg.category.displayName}"
                                                 }
                                             }
@@ -465,6 +533,7 @@ fun YouTubeCloneScreen(
                                     currentAnichinTitle = title
                                     currentAnichinSeriesUrl = seriesUrl.ifBlank { url }
                                     currentAnichinEpisode = episodeLabel
+                                    isWatchPage = episodeLabel.isNotBlank() || url.contains("episode", ignoreCase = true)
                                     val path = runCatching { java.net.URI(url).path.orEmpty() }.getOrDefault("")
                                     val isContentPage = path.length > 1 &&
                                         !path.startsWith("/page/") &&
@@ -484,7 +553,7 @@ fun YouTubeCloneScreen(
                             view: WebView,
                             request: WebResourceRequest
                         ): WebResourceResponse? {
-                            if (config.ui.adBlockEnabled && BraveShieldsEngine.shouldBlockRequest(request)) {
+                            if (currentConfig.ui.adBlockEnabled && BraveShieldsEngine.shouldBlockRequest(request)) {
                                 return BraveShieldsEngine.emptyResponse()
                             }
                             return super.shouldInterceptRequest(view, request)
@@ -494,18 +563,17 @@ fun YouTubeCloneScreen(
                             view: WebView,
                             request: WebResourceRequest
                         ): Boolean {
-                            // Never hijack iframe / sub-frame loads (fixes Google login & embedded players)
                             if (!request.isForMainFrame) return false
                             val scheme = request.url.scheme?.lowercase().orEmpty()
                             if (scheme != "http" && scheme != "https") return true
 
+                            val cfg = currentConfig
                             val host = request.url.host?.lowercase().orEmpty()
-                            if (config.ui.adBlockEnabled && BraveShieldsEngine.isBlockedHost(host)) {
+                            if (cfg.ui.adBlockEnabled && BraveShieldsEngine.isBlockedHost(host)) {
                                 return true
                             }
 
-                            // When on Anichin, bypass & block any external popunder/new-tab redirects
-                            if (activeChannel == NovaChannel.ANICHIN || isAnichinHost(view.url)) {
+                            if (cfg.ui.activeChannel == NovaChannel.ANICHIN || isAnichinHost(view.url)) {
                                 return !isAnichinDomain(host)
                             }
 
@@ -521,20 +589,22 @@ fun YouTubeCloneScreen(
 
                         override fun onPageStarted(view: WebView, url: String?, favicon: Bitmap?) {
                             super.onPageStarted(view, url, favicon)
+                            val cfg = currentConfig
                             if (isYouTubeHost(url)) {
-                                injectNovaEnhancements(view, config, activeSpeed, activeLoop)
+                                injectNovaEnhancements(view, cfg, currentSpeedState, currentLoopState)
                             } else if (isAnichinHost(url)) {
-                                injectAnichinEnhancements(view, config)
+                                injectAnichinEnhancements(view, cfg)
                             }
                         }
 
                         override fun onPageFinished(view: WebView, url: String?) {
                             super.onPageFinished(view, url)
+                            val cfg = currentConfig
                             if (isYouTubeHost(url)) {
-                                injectNovaEnhancements(view, config, activeSpeed, activeLoop)
+                                injectNovaEnhancements(view, cfg, currentSpeedState, currentLoopState)
                                 fixViewportAlignment(view)
                             } else if (isAnichinHost(url)) {
-                                injectAnichinEnhancements(view, config)
+                                injectAnichinEnhancements(view, cfg)
                                 fixViewportAlignment(view)
                             }
                         }
@@ -561,7 +631,7 @@ fun YouTubeCloneScreen(
                         }
                     }
 
-                    loadUrl(config.ui.activeChannel.homeUrl)
+                    loadUrl(currentConfig.ui.activeChannel.homeUrl)
                     webViewRef = this
                 }
             },
@@ -621,7 +691,12 @@ fun YouTubeCloneScreen(
                         Animatable((maxWidthPx - btnSizePx - edgeMarginPx).coerceAtLeast(0f))
                     }
                     var offsetY by remember(maxHeightPx) {
-                        mutableFloatStateOf((maxHeightPx * 0.72f).coerceIn(edgeMarginPx, (maxHeightPx - btnSizePx - edgeMarginPx).coerceAtLeast(edgeMarginPx)))
+                        mutableFloatStateOf(
+                            (maxHeightPx * 0.72f).coerceIn(
+                                edgeMarginPx,
+                                (maxHeightPx - btnSizePx - edgeMarginPx).coerceAtLeast(edgeMarginPx)
+                            )
+                        )
                     }
 
                     // Dimmed scrim when AssistiveTouch menu is expanded
@@ -760,7 +835,7 @@ fun YouTubeCloneScreen(
                                 }
                             }
 
-                            // Row 3: Video Controls (when on Watch page)
+                            // Row 3: Video Controls (when on Watch / Episode page)
                             if (isWatchPage) {
                                 Row(
                                     modifier = Modifier.fillMaxWidth(),
@@ -777,7 +852,7 @@ fun YouTubeCloneScreen(
                                             (speeds.indexOfFirst { kotlin.math.abs(it - activeSpeed) < 0.05f } + 1) % speeds.size
                                         activeSpeed = speeds[nextIdx]
                                         webViewRef?.evaluateJavascript(
-                                            "(() => { const v = document.querySelector('video'); if (v) v.playbackRate = $activeSpeed; })();",
+                                            "(() => { window.__novaTargetSpeed = $activeSpeed; const v = document.querySelector('video'); if (v) v.playbackRate = $activeSpeed; })();",
                                             null
                                         )
                                         hudText = "Speed ${activeSpeed}x"
@@ -790,7 +865,7 @@ fun YouTubeCloneScreen(
                                     ) {
                                         activeLoop = !activeLoop
                                         webViewRef?.evaluateJavascript(
-                                            "(() => { const v = document.querySelector('video'); if (v) v.loop = $activeLoop; })();",
+                                            "(() => { window.__novaTargetLoop = $activeLoop; const v = document.querySelector('video'); if (v) v.loop = $activeLoop; })();",
                                             null
                                         )
                                         hudText = if (activeLoop) "Loop Enabled" else "Loop Off"
@@ -803,7 +878,7 @@ fun YouTubeCloneScreen(
                                             selected = false
                                         ) {
                                             isFloatingMenuOpen = false
-                                            runCatching { activity.enterPictureInPictureMode() }
+                                            MainActivity.enterNovaPip(activity)
                                         }
                                     }
                                 }
@@ -1172,9 +1247,69 @@ private fun extractIdFromUrl(url: String): String? {
 }
 
 /**
- * Forces the WebView & YouTube DOM to re-align to the portrait/current viewport width
- * so minimizing a video, exiting fullscreen, or navigating back never shifts the layout.
+ * Temporarily disables video track rendering when the Activity surface is detached in background
+ * so audio continues smoothly without stalling Chromium's hardware MediaCodec queue.
  */
+private fun suspendWebVideoTrackForBackground(webView: WebView) {
+    val js = """
+        (function() {
+            document.querySelectorAll('video').forEach(v => {
+                try {
+                    if (!v.paused && v.videoTracks && v.videoTracks.length > 0) {
+                        v.videoTracks[0].selected = false;
+                    }
+                } catch (e) {}
+            });
+        })();
+    """.trimIndent()
+    webView.evaluateJavascript(js, null)
+}
+
+private fun pauseAllWebVideos(webView: WebView) {
+    val js = """
+        (function() {
+            document.querySelectorAll('video').forEach(v => {
+                try { v.pause(); } catch (e) {}
+            });
+        })();
+    """.trimIndent()
+    webView.evaluateJavascript(js, null)
+}
+
+/**
+ * Flushes Chromium's video decoder & MSE ChunkDemuxer upon returning to foreground
+ * so video snaps immediately onto the live audio PTS clock without endless buffering or A/V drift.
+ */
+private fun resyncWebVideoPlayback(webView: WebView, targetSpeed: Float) {
+    val js = """
+        (function() {
+            const adActive = !!document.querySelector('.ad-showing, .ad-interrupting');
+            document.querySelectorAll('video').forEach(v => {
+                try {
+                    if (v.videoTracks && v.videoTracks.length > 0) {
+                        v.videoTracks[0].selected = true;
+                    }
+                    if (!adActive && Math.abs(v.playbackRate - $targetSpeed) > 0.01) {
+                        v.playbackRate = $targetSpeed;
+                    }
+                    if (v.readyState >= 1 && !v.ended) {
+                        const shouldPlay = !v.paused || v.seeking;
+                        const t = v.currentTime;
+                        if (shouldPlay && isFinite(t) && t > 0.05) {
+                            v.currentTime = Math.max(0, t - 0.03);
+                        }
+                        if (shouldPlay) {
+                            const p = v.play();
+                            if (p && p.catch) p.catch(() => {});
+                        }
+                    }
+                } catch (e) {}
+            });
+        })();
+    """.trimIndent()
+    webView.evaluateJavascript(js, null)
+}
+
 private fun fixViewportAlignment(webView: WebView) {
     if (webView.scrollX != 0) {
         webView.scrollTo(0, webView.scrollY)
@@ -1213,25 +1348,7 @@ private fun fixViewportAlignment(webView: WebView) {
     webView.evaluateJavascript(resetJs, null)
 }
 
-/**
- * Injects YTKACE / ReVanced-style enhancements + Brave Shields AdBlock into YouTube pages ONLY:
- * 1. Brave Shields JSON-prune scriptlet (strips adPlacements, playerAds, adSlots before player loads)
- * 2. Viewport lock CSS so minimizing/exiting a video never shifts ytm-app horizontally
- * 3. Background Playback unlock (overrides document.hidden / visibilitychange)
- * 4. Brave Cosmetic AdBlock CSS + fallback video ad fast-skipper
- * 5. OLED Pure Black CSS & UI Cleanup (hide Shorts shelf)
- * 6. SponsorBlock & Playback rate / loop bridge
- */
-private fun injectNovaEnhancements(
-    webView: WebView,
-    config: NovaConfig,
-    speed: Float,
-    loop: Boolean
-) {
-    if (config.ui.adBlockEnabled) {
-        webView.evaluateJavascript(BraveShieldsEngine.BRAVE_YOUTUBE_SCRIPTLET_JS, null)
-    }
-
+internal fun buildNovaYouTubeCss(config: NovaConfig): String {
     val viewportLockCss = """
         html, body, ytm-app {
             overflow-x: hidden !important;
@@ -1243,8 +1360,8 @@ private fun injectNovaEnhancements(
         }
     """.trimIndent()
 
-    val themeBg = config.ui.themeStyle.webBgHex
-    val glassHeaderCss = if (config.ui.themeStyle == NovaThemeStyle.LIQUID_GLASS) {
+    val themeBg = if (config.ui.oledModeEnabled) "#000000" else config.ui.themeStyle.webBgHex
+    val glassHeaderCss = if (config.ui.themeStyle == NovaThemeStyle.LIQUID_GLASS && !config.ui.oledModeEnabled) {
         """
         .mobile-topbar-header, ytm-pivot-bar-renderer {
             background-color: rgba(12, 18, 36, 0.78) !important;
@@ -1255,7 +1372,7 @@ private fun injectNovaEnhancements(
         """.trimIndent()
     } else ""
 
-    val oledCss = """
+    val surfaceCss = """
         html, body, ytm-app, ytm-watch, ytm-SingleColumnWatchNextResultsRenderer,
         ytm-RichGridRenderer, .mobile-topbar-header, ytm-pivot-bar-renderer {
             background-color: $themeBg !important;
@@ -1263,26 +1380,82 @@ private fun injectNovaEnhancements(
         $glassHeaderCss
     """.trimIndent()
 
-    val shortsCss = if (config.ui.hideShortsShelf) {
-        """
-        ytm-reel-shelf-renderer, ytm-shorts-lockup-view-model,
-        ytm-pivot-bar-item-renderer:has(.pivot-shorts) {
-            display: none !important;
-        }
+    val cleanupParts = mutableListOf<String>()
+    if (config.ui.hideShortsShelf) {
+        cleanupParts += """
+            ytm-reel-shelf-renderer, ytm-shorts-lockup-view-model,
+            ytm-pivot-bar-item-renderer:has(.pivot-shorts) {
+                display: none !important;
+            }
         """.trimIndent()
-    } else ""
+    }
+    if (config.ui.hideCreateButton) {
+        cleanupParts += """
+            ytm-pivot-bar-item-renderer:has(.pivot-uploads),
+            .pivot-bar-item-tab.pivot-uploads,
+            button[aria-label="Create"],
+            ytm-topbar-menu-button-renderer:has(button[aria-label*="Create"]) {
+                display: none !important;
+            }
+        """.trimIndent()
+    }
+    if (config.ui.hideCastButton) {
+        cleanupParts += """
+            .ytp-cast-button, ytm-cast-button, button[aria-label*="Cast"],
+            .mobile-topbar-header-content button[aria-label*="Cast"] {
+                display: none !important;
+            }
+        """.trimIndent()
+    }
+    if (config.ui.hideWatermark) {
+        cleanupParts += """
+            .iv-branding, .ytp-watermark, .branding-img-container {
+                display: none !important;
+            }
+        """.trimIndent()
+    }
+
+    // Apply Tab Editor visibility rules
+    config.ui.tabs.filterNot { it.visible }.forEach { hiddenTab ->
+        when (hiddenTab.id) {
+            "home" -> cleanupParts += "ytm-pivot-bar-item-renderer:has(.pivot-w2w) { display: none !important; }"
+            "search" -> cleanupParts += "button[aria-label*=\"Search\"], .topbar-menu-button-avatar-button[aria-label*=\"Search\"] { display: none !important; }"
+            "bookmarks" -> cleanupParts += "ytm-pivot-bar-item-renderer:has(.pivot-library), ytm-pivot-bar-item-renderer:has(.pivot-you) { display: none !important; }"
+        }
+    }
 
     val adBlockCss = if (config.ui.adBlockEnabled) {
         BraveShieldsEngine.BRAVE_COSMETIC_CSS.trimIndent()
     } else ""
 
-    val combinedCss = (viewportLockCss + "\n" + oledCss + "\n" + shortsCss + "\n" + adBlockCss)
+    return (listOf(viewportLockCss, surfaceCss) + cleanupParts + adBlockCss)
+        .filter { it.isNotBlank() }
+        .joinToString(" ")
         .replace("\n", " ")
         .replace("\"", "\\\"")
+}
+
+private fun injectNovaEnhancements(
+    webView: WebView,
+    config: NovaConfig,
+    speed: Float,
+    loop: Boolean
+) {
+    if (config.ui.adBlockEnabled) {
+        webView.evaluateJavascript(BraveShieldsEngine.BRAVE_YOUTUBE_SCRIPTLET_JS, null)
+    }
+
+    val combinedCss = buildNovaYouTubeCss(config)
 
     val js = """
         (function() {
             if (!location.hostname.includes('youtube.com')) return;
+
+            // Update live dynamic flags so toggling settings works immediately without app restart
+            window.__novaAllowBg = ${config.playback.backgroundPlayEnabled};
+            window.__novaAdBlock = ${config.ui.adBlockEnabled};
+            window.__novaTargetSpeed = $speed;
+            window.__novaTargetLoop = $loop;
 
             // 1. Inject / Update NovaTube CSS
             let style = document.getElementById('novatube-style');
@@ -1295,71 +1468,167 @@ private fun injectNovaEnhancements(
                 style.textContent = "$combinedCss";
             }
 
-            // 2. Background Playback Unlock
-            if (${config.playback.backgroundPlayEnabled} && !window.__novaBgHooked) {
+            // 2. Dynamic Background Playback Hook (respects live window.__novaAllowBg toggle)
+            if (!window.__novaBgHooked) {
                 window.__novaBgHooked = true;
                 try {
-                    Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
-                    Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
-                    window.addEventListener('visibilitychange', e => e.stopImmediatePropagation(), true);
-                    window.addEventListener('webkitvisibilitychange', e => e.stopImmediatePropagation(), true);
+                    const origHidden = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
+                    const origVis = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
+                    Object.defineProperty(document, 'hidden', {
+                        configurable: true,
+                        get: () => window.__novaAllowBg ? false : (origHidden && origHidden.get ? origHidden.get.call(document) : false)
+                    });
+                    Object.defineProperty(document, 'visibilityState', {
+                        configurable: true,
+                        get: () => window.__novaAllowBg ? 'visible' : (origVis && origVis.get ? origVis.get.call(document) : 'visible')
+                    });
+                    window.addEventListener('visibilitychange', e => {
+                        if (window.__novaAllowBg) e.stopImmediatePropagation();
+                    }, true);
+                    window.addEventListener('webkitvisibilitychange', e => {
+                        if (window.__novaAllowBg) e.stopImmediatePropagation();
+                    }, true);
                 } catch (e) {}
             }
 
-            // 3. Apply Speed & Loop ONLY on /watch or /shorts pages
+            // 3. Apply Speed & Loop on /watch or /shorts pages
             const isWatch = location.pathname.startsWith('/watch') || location.pathname.startsWith('/shorts');
             if (isWatch) {
                 const v = document.querySelector('video');
-                if (v && !document.querySelector('.ad-showing')) {
-                    if (Math.abs(v.playbackRate - $speed) > 0.01) {
-                        v.playbackRate = $speed;
+                if (v && !document.querySelector('.ad-showing, .ad-interrupting')) {
+                    if (Math.abs(v.playbackRate - window.__novaTargetSpeed) > 0.01) {
+                        v.playbackRate = window.__novaTargetSpeed;
                     }
-                    v.loop = $loop;
+                    v.loop = !!window.__novaTargetLoop;
                 }
             }
 
-            // 4. Periodic monitor for AdBlock, URL changes, and SponsorBlock progress
+            // 4. Periodic monitor for AdBlock, URL changes, SponsorBlock, and A/V Desync Watchdog
             if (!window.__novaLoopStarted) {
                 window.__novaLoopStarted = true;
                 let lastUrl = '';
+                let lastReportedPlaying = false;
+                let tickCounter = 0;
+                let prevCheckTime = -1;
+                let prevDecodedFrames = -1;
+                let frozenFrameStreaks = 0;
+                let lastAutoResyncMs = 0;
+
                 setInterval(() => {
                     if (!location.hostname.includes('youtube.com')) return;
+                    tickCounter++;
 
                     if (location.href !== lastUrl) {
                         lastUrl = location.href;
+                        prevCheckTime = -1;
+                        prevDecodedFrames = -1;
+                        frozenFrameStreaks = 0;
                         if (window.NovaBridge) window.NovaBridge.onUrlChanged(lastUrl);
                     }
 
                     const onWatchPage = location.pathname.startsWith('/watch') || location.pathname.startsWith('/shorts');
+                    if (!onWatchPage) return;
 
-                    // AdBlock: Auto-skip video ads on watch page
-                    if (${config.ui.adBlockEnabled} && onWatchPage) {
+                    const video = document.querySelector('video');
+                    if (!video) return;
+
+                    const adShowing = document.querySelector('.ad-showing, .ad-interrupting');
+                    if (window.__novaAdBlock && adShowing) {
+                        window.__novaWasInAd = true;
                         const skipBtn = document.querySelector(
                             '.ytp-ad-skip-button, .ytp-ad-skip-button-modern, .ytp-skip-ad-button, .ytp-ad-overlay-close-button'
                         );
                         if (skipBtn) skipBtn.click();
 
-                        const adShowing = document.querySelector('.ad-showing, .ad-interrupting');
-                        const adVideo = adShowing ? adShowing.querySelector('video') : null;
-                        if (adVideo) {
-                            adVideo.muted = true;
-                            if (isFinite(adVideo.duration) && adVideo.duration > 0) {
-                                adVideo.currentTime = adVideo.duration;
-                            } else {
-                                adVideo.playbackRate = 16.0;
-                            }
+                        if (window.__novaPreAdMuted === undefined) {
+                            window.__novaPreAdMuted = video.muted;
+                        }
+                        video.muted = true;
+                        if (isFinite(video.duration) && video.duration > 0.3) {
+                            video.currentTime = Math.max(0, video.duration - 0.08);
+                        } else {
+                            video.playbackRate = 8.0;
+                        }
+                        return;
+                    }
+
+                    // Restore normal playback speed & mute state immediately after an ad finishes
+                    if (window.__novaWasInAd) {
+                        window.__novaWasInAd = false;
+                        if (window.__novaPreAdMuted !== undefined) {
+                            video.muted = window.__novaPreAdMuted;
+                            delete window.__novaPreAdMuted;
+                        }
+                        const desiredRate = window.__novaTargetSpeed || 1.0;
+                        if (Math.abs(video.playbackRate - desiredRate) > 0.01) {
+                            video.playbackRate = desiredRate;
+                        }
+                    } else {
+                        const desiredRate = window.__novaTargetSpeed || 1.0;
+                        if (video.playbackRate > 4.1) {
+                            video.playbackRate = desiredRate;
                         }
                     }
 
-                    if (onWatchPage) {
-                        const video = document.querySelector('video');
-                        if (video && window.NovaBridge && !document.querySelector('.ad-showing')) {
-                            window.NovaBridge.onVideoProgress(
-                                video.currentTime || 0,
-                                video.duration || 0,
-                                !video.paused
-                            );
+                    // Live A/V Desync & Stuck-Buffer Watchdog (runs every 1s when visible in foreground)
+                    if (tickCounter % 4 === 0 && !video.paused && !video.ended && video.videoWidth > 0) {
+                        const curT = video.currentTime || 0;
+                        let totalFrames = -1;
+                        if (typeof video.getVideoPlaybackQuality === 'function') {
+                            const q = video.getVideoPlaybackQuality();
+                            if (q && typeof q.totalVideoFrames === 'number') {
+                                totalFrames = q.totalVideoFrames;
+                            }
                         }
+
+                        // Check buffered range ahead of playhead
+                        let bufferedAhead = 0;
+                        try {
+                            for (let i = 0; i < video.buffered.length; i++) {
+                                if (video.buffered.start(i) <= curT + 0.2 && video.buffered.end(i) >= curT) {
+                                    bufferedAhead = video.buffered.end(i) - curT;
+                                    break;
+                                }
+                            }
+                        } catch (e) {}
+
+                        const audioMoved = prevCheckTime >= 0 && (curT - prevCheckTime) > 0.65;
+                        const videoFrozen = totalFrames >= 0 && prevDecodedFrames >= 0 && (totalFrames - prevDecodedFrames) === 0;
+                        const stuckWithBuffer = video.readyState <= 2 && bufferedAhead > 1.8;
+
+                        if ((audioMoved && videoFrozen) || stuckWithBuffer) {
+                            frozenFrameStreaks++;
+                        } else {
+                            frozenFrameStreaks = 0;
+                        }
+
+                        prevCheckTime = curT;
+                        prevDecodedFrames = totalFrames;
+
+                        const nowMs = Date.now();
+                        if (frozenFrameStreaks >= 2 && (nowMs - lastAutoResyncMs) > 6000) {
+                            frozenFrameStreaks = 0;
+                            lastAutoResyncMs = nowMs;
+                            try {
+                                if (video.videoTracks && video.videoTracks.length > 0) {
+                                    video.videoTracks[0].selected = true;
+                                }
+                                video.currentTime = Math.max(0, curT - 0.04);
+                                const p = video.play();
+                                if (p && p.catch) p.catch(() => {});
+                            } catch (e) {}
+                        }
+                    }
+
+                    // Only bridge progress when playing or when play/pause state transitions (saves battery)
+                    const isPlayingNow = !video.paused && !video.ended;
+                    if (window.NovaBridge && (isPlayingNow || isPlayingNow !== lastReportedPlaying)) {
+                        lastReportedPlaying = isPlayingNow;
+                        window.NovaBridge.onVideoProgress(
+                            video.currentTime || 0,
+                            video.duration || 0,
+                            isPlayingNow
+                        );
                     }
                 }, 250);
             }
@@ -1369,10 +1638,6 @@ private fun injectNovaEnhancements(
     webView.evaluateJavascript(js, null)
 }
 
-/**
- * Injects AdBlock, popup blocking, background playback unlock, and viewport lock
- * when the user switches to the Anichin channel (https://anichin.moe/).
- */
 private fun injectAnichinEnhancements(
     webView: WebView,
     config: NovaConfig
@@ -1388,7 +1653,7 @@ private fun injectAnichinEnhancements(
         """.trimIndent()
     } else ""
 
-    val themeBg = config.ui.themeStyle.webBgHex
+    val themeBg = if (config.ui.oledModeEnabled) "#000000" else config.ui.themeStyle.webBgHex
     val viewportCss = """
         html, body {
             overflow-x: hidden !important;
@@ -1404,6 +1669,8 @@ private fun injectAnichinEnhancements(
     val js = """
         (function() {
             if (!location.hostname.includes('anichin.moe')) return;
+
+            window.__novaAllowBg = ${config.playback.backgroundPlayEnabled};
 
             let style = document.getElementById('novatube-anichin-style');
             if (!style) {
@@ -1442,12 +1709,22 @@ private fun injectAnichinEnhancements(
                 }, true);
             }
 
-            if (${config.playback.backgroundPlayEnabled} && !window.__novaBgHooked) {
+            if (!window.__novaBgHooked) {
                 window.__novaBgHooked = true;
                 try {
-                    Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
-                    Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
-                    window.addEventListener('visibilitychange', e => e.stopImmediatePropagation(), true);
+                    const origHidden = Object.getOwnPropertyDescriptor(Document.prototype, 'hidden');
+                    const origVis = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
+                    Object.defineProperty(document, 'hidden', {
+                        configurable: true,
+                        get: () => window.__novaAllowBg ? false : (origHidden && origHidden.get ? origHidden.get.call(document) : false)
+                    });
+                    Object.defineProperty(document, 'visibilityState', {
+                        configurable: true,
+                        get: () => window.__novaAllowBg ? 'visible' : (origVis && origVis.get ? origVis.get.call(document) : 'visible')
+                    });
+                    window.addEventListener('visibilitychange', e => {
+                        if (window.__novaAllowBg) e.stopImmediatePropagation();
+                    }, true);
                 } catch (e) {}
             }
 

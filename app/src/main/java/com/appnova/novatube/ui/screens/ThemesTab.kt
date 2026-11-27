@@ -75,7 +75,7 @@ fun ThemesTab(
                                 onUpdate {
                                     it.copy(
                                         themeStyle = style,
-                                        oledModeEnabled = style == NovaThemeStyle.OLED_BLACK || style == NovaThemeStyle.LIQUID_GLASS,
+                                        oledModeEnabled = style == NovaThemeStyle.OLED_BLACK,
                                         liquidGlassHudEnabled = style == NovaThemeStyle.LIQUID_GLASS || style == NovaThemeStyle.CYBER_NEON
                                     )
                                 }

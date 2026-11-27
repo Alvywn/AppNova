@@ -139,7 +139,7 @@ data class UiConfig(
     val activeChannel: NovaChannel = NovaChannel.YOUTUBE,
     val themeStyle: NovaThemeStyle = NovaThemeStyle.LIQUID_GLASS,
     val adBlockEnabled: Boolean = true,
-    val oledModeEnabled: Boolean = true,
+    val oledModeEnabled: Boolean = false,
     val liquidGlassHudEnabled: Boolean = true,
     val hideShortsShelf: Boolean = false,
     val hideCreateButton: Boolean = true,

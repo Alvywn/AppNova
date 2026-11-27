@@ -394,7 +394,7 @@ fun WatchPlayerScreen(
                         }
 
                         if (config.playback.pipUnlockEnabled && activity != null) {
-                            IconButton(onClick = { runCatching { activity.enterPictureInPictureMode() } }) {
+                            IconButton(onClick = { com.appnova.novatube.ui.MainActivity.enterNovaPip(activity) }) {
                                 Icon(Icons.Rounded.PictureInPictureAlt, contentDescription = "PiP", tint = Color.White)
                             }
                         }
